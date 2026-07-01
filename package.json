@@ -1,0 +1,42 @@
+{
+  "name": "nats-kit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Monorepo for the @nats-kit/* library family (framework-agnostic NATS JetStream/KV toolkit + NestJS adapter).",
+  "type": "module",
+  "packageManager": "pnpm@11.6.0",
+  "engines": {
+    "node": ">=22.22.0",
+    "pnpm": ">=10.0.0"
+  },
+  "scripts": {
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck --force",
+    "test": "turbo run test",
+    "test:unit": "turbo run test",
+    "ci": "turbo run lint typecheck test build",
+    "ci-cacheless": "turbo run lint typecheck test build --force",
+    "clean": "turbo run clean && rimraf .turbo node_modules",
+    "upgrade:interactive": "pnpm update --recursive --interactive --latest"
+  },
+  "devDependencies": {
+    "@changesets/cli": "2.31.0",
+    "@eslint/js": "10.0.1",
+    "@types/node": "26.0.1",
+    "@typescript-eslint/eslint-plugin": "8.62.1",
+    "@typescript-eslint/parser": "8.62.1",
+    "eslint": "10.6.0",
+    "eslint-import-resolver-typescript": "4.4.5",
+    "eslint-plugin-import": "2.32.0",
+    "globals": "17.7.0",
+    "rimraf": "6.1.3",
+    "tshy": "4.1.3",
+    "turbo": "2.10.1",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.62.1",
+    "vitest": "4.1.9"
+  }
+}

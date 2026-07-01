@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# tshy dual-build temp artifacts. `.tshy/` holds tshy's generated scratch
+# tsconfigs (build/esm/commonjs.json); `.tshy-build/` is its scratch outDir.
+# `packages/*/src/package.json` is the per-dialect type marker tshy drops
+# during a build and normally auto-deletes — ignored defensively so a
+# build that crashes mid-run can't leave a tracked stray.
+.tshy/
+.tshy-build/
+packages/*/src/package.json
+
+# Turbo
+.turbo/
+
+# Tests
+coverage/
+.vitest/
+*.lcov
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Env
+.env
+.env.local
+.env.*.local

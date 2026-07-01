@@ -1,0 +1,64 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "ui": "stream",
+  "globalDependencies": [
+    "tsconfig.base.json",
+    "eslint.config.js",
+    "vitest.config.base.ts",
+    "vitest.config.nestjs.ts"
+  ],
+  "futureFlags": {
+    "pruneIncludesGlobalFiles": true
+  },
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "src/**",
+        "tsconfig.json",
+        "tsconfig.build.json",
+        "package.json",
+        "../../tsconfig.base.json"
+      ],
+      "outputs": ["dist/**", "!dist/node_modules/**", "*.tsbuildinfo"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "typecheck": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "src/**",
+        "tsconfig*.json",
+        "package.json",
+        "../../tsconfig.base.json"
+      ],
+      "outputs": []
+    },
+    "lint": {
+      "dependsOn": ["build"],
+      "inputs": [
+        "src/**",
+        "eslint.config.js",
+        "../../eslint.config.js",
+        "package.json"
+      ],
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "src/**",
+        "vitest.config.ts",
+        "../../vitest.config.base.ts",
+        "package.json"
+      ],
+      "outputs": []
+    },
+    "clean": {
+      "cache": false,
+      "outputs": []
+    }
+  }
+}

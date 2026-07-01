@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Explicit `types` — Node-only package. TS 6.0 defaults `types` to "all
+    // visible @types/*"; declaring @types/node explicitly pins the dependency
+    // intent and guards against phantom-type drift.
+    "types": ["node"],
+    "rootDir": "./src",
+    "outDir": "./dist",
+    // Buildinfo at the package root, NOT inside `dist`: the typecheck pass
+    // (`tsc -p tsconfig.json --noEmit`, incremental) writes this file, and
+    // `files` ships `dist`, so `./dist/.tsbuildinfo` would get packed. Root
+    // `.tsbuildinfo` is gitignored and outside `files`.
+    "tsBuildInfoFile": "./.tsbuildinfo"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules", "**/*.test.ts", "**/__tests__/**"]
+}

@@ -1,0 +1,16 @@
+{
+  // Type-checks the Docker-backed integration suite. NOT wired into the package
+  // `typecheck` script (which stays `tsc -p tsconfig.json` over src/ only, so
+  // `pnpm --filter @nats-kit/core typecheck` never needs Docker/testcontainers
+  // types). Run manually with `tsc -p test/tsconfig.json --noEmit` to confirm
+  // the integration files compile. `exclude` is overridden because the base
+  // config excludes `**/*.test.ts` — exactly the files this project must check.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "noEmit": true,
+    "incremental": false
+  },
+  "include": ["integration/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

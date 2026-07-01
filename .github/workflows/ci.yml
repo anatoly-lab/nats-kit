@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Cancel in-progress runs when a new commit is pushed to the same PR/branch.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: lint + typecheck + test + build (Node ${{ matrix.node-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Floor is engines.node >=22.22.0 (see .nvmrc + package.json). engineStrict
+        # is on, so the runner Node must satisfy it — pin the 22.22 line.
+        node-version: ["22.22"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - name: Cache Turborepo
+        uses: actions/cache@v5
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-node${{ matrix.node-version }}-${{ github.sha }}
+          restore-keys: |
+            turbo-${{ runner.os }}-node${{ matrix.node-version }}-
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Fast feedback: lint, typecheck, unit tests (vitest, no Docker) and build
+      # for both packages via turbo. Kept as one step so a failure here reports
+      # without waiting on the slow Docker-backed integration job below.
+      - name: Lint + typecheck + test + build
+        run: pnpm exec turbo run lint typecheck test build
+
+  integration:
+    name: integration tests (@nats-kit/core, real nats-server)
+    runs-on: ubuntu-latest
+    # Separate from `verify` so lint/typecheck/unit failures surface fast without
+    # waiting on this job. Testcontainers pulls the nats image, starts a real
+    # container and exercises reconnect windows — give it generous headroom.
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js 22.22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22.22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # GitHub-hosted ubuntu-latest runners ship a working Docker daemon, so
+      # Testcontainers spins up the real nats-server with no extra `services:`
+      # or setup — the library talks to the local Docker socket directly.
+      - name: Integration tests (Testcontainers -> real nats-server)
+        run: pnpm --filter @nats-kit/core test:integration

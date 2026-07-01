@@ -1,0 +1,34 @@
+# pnpm workspace definition + settings (replaces the root package.json
+# "workspaces" field AND the old .npmrc). As of pnpm 10/11, `.npmrc` holds only
+# auth/registry; every other setting lives here in camelCase (see pnpm "Settings").
+#
+# Publishable cores live under packages/*. There are no private demo apps or an
+# e2e suite yet (STEP 1 skeleton); add `apps/*/*` / `tests-e2e` globs when they land.
+packages:
+  - "packages/*"
+
+# ALL cross-package @nats-kit/* deps use the pnpm `workspace:*` protocol. pnpm
+# rewrites `workspace:*` -> the exact just-published version at publish time, and
+# `changeset publish` delegates to `pnpm publish`, so the registry metadata is
+# always correct without a hand-run version-stamp script.
+linkWorkspacePackages: true
+
+# Carried over from the old .npmrc.
+saveExact: true
+engineStrict: true
+
+# pnpm 11 blocks dependency build/postinstall scripts by default (supply-chain
+# hardening). Each must be explicitly allowed (true) or declined (false), or the
+# non-interactive `pnpm install` turbo runs before tasks exits 1.
+allowBuilds:
+  esbuild: true # vitest native binary setup
+  unrs-resolver: true # eslint-import-resolver-typescript native binding
+  "@nestjs/core": false # postinstall is just a funding banner
+  '@swc/core': true # native binary setup for the NestJS-test swc transform
+  # testcontainers (nats-kit-core integration-test devDep) transitive deps.
+  # Declined: none is needed for our usage — ssh2 works without cpu-features'
+  # native SIMD optimization, and protobufjs ships prebuilt (its postinstall is
+  # codegen we don't invoke). Declaring them keeps non-interactive install green.
+  cpu-features: false
+  ssh2: false
+  protobufjs: false

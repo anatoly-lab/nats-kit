@@ -1,0 +1,75 @@
+# Tag-triggered lockstep publish for the @nats-kit/* family.
+#
+# Publishing happens ONLY when a version tag (`v*`, e.g. `v0.2.0`) is pushed.
+# Pushing/merging to `main` NEVER publishes — push to main as much as you want.
+#
+# To cut a release (both packages move together — see `fixed` in
+# .changeset/config.json):
+#   1. pnpm version-packages      # = `changeset version`: consumes .changeset/*.md,
+#                                  #   bumps both in lockstep, rewrites workspace:*
+#                                  #   deps, writes CHANGELOG.md
+#   2. git commit -am "release: vX.Y.Z" && git push        # land bumps on main
+#   3. git tag vX.Y.Z && git push origin vX.Y.Z            # <-- THIS publishes
+#
+# HUMAN FOLLOW-UP before the first publish works:
+#   - Create the @nats-kit npm org (or scope) and configure npmjs.org
+#     trusted-publisher (OIDC) bindings for BOTH packages, bound to this repo +
+#     this workflow filename (`npm-publish.yml`). Do NOT rename this file after
+#     the bindings exist, or OIDC authorization breaks and publishes 404.
+
+name: Publish to npm (@nats-kit)
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency: ${{ github.workflow }}-${{ github.ref }}
+
+permissions:
+  contents: read # checkout the tagged commit
+  id-token: write # npm OIDC trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.22"
+          cache: "pnpm"
+          registry-url: "https://registry.npmjs.org"
+
+      # Guard: the tag is only a TRIGGER — pnpm publishes whatever each
+      # package.json says, never the tag name. Both packages move in lockstep
+      # (`fixed`), so @nats-kit/core is an authoritative representative.
+      - name: Assert tag matches package version (lockstep)
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG="${REF_NAME#v}"
+          PKG="$(node -p "require('./packages/nats-kit-core/package.json').version")"
+          echo "pushed tag: v$TAG | package.json version: $PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::Pushed tag v$TAG does not match package version $PKG. Run 'pnpm version-packages', commit the bump, then tag the bump commit."
+            exit 1
+          fi
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build before publish
+        run: pnpm exec turbo run build
+
+      - name: Publish to npm (lockstep, OIDC trusted publishing)
+        # `pnpm -r publish` publishes every non-private workspace package whose
+        # version is not yet on the registry (so re-running a tag is a safe
+        # no-op) and rewrites workspace:* -> the exact published version. Each
+        # package carries publishConfig.access=public. --no-git-checks: CI runs
+        # on a detached tag checkout.
+        run: pnpm -r publish --no-git-checks
+        # Deliberately NO NPM_TOKEN / NODE_AUTH_TOKEN: leaving it unset selects
+        # npm OIDC trusted publishing. Provenance is automatic under it.

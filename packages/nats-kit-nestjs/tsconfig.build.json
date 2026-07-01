@@ -1,0 +1,12 @@
+{
+  // tshy build config — see @nats-kit/core for the full rationale.
+  // `verbatimModuleSyntax: false` lets tshy's CommonJS pass emit
+  // `require`/`exports` from ESM source; `incremental` off avoids a buildinfo
+  // path outside tshy's relocated outDir. `typecheck` uses the strict
+  // ESM-only `tsconfig.json`.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "verbatimModuleSyntax": false,
+    "incremental": false
+  }
+}

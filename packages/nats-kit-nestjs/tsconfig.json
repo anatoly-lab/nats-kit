@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // Explicit `types` — Node-only package. Pins @types/node and guards against
+    // phantom-type drift. Mirrors @nats-kit/core.
+    "types": ["node"],
+    "rootDir": "./src",
+    "outDir": "./dist",
+    // Buildinfo at the package root, NOT inside `dist` (see @nats-kit/core).
+    "tsBuildInfoFile": "./.tsbuildinfo",
+    // NestJS adapter uses decorator metadata. Required by @nestjs/common.
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["dist", "node_modules", "**/*.test.ts", "**/__tests__/**"]
+}
