@@ -1,6 +1,6 @@
 {
   "name": "@nats-kit/nestjs",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "NestJS adapter for @nats-kit/core. The only package allowed to import @nestjs/* and reflect-metadata.",
   "license": "MIT",
   "repository": {

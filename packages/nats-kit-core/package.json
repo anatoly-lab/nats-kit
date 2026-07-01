@@ -1,6 +1,6 @@
 {
   "name": "@nats-kit/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Framework-free NATS JetStream/KV toolkit core. Node + @nats-io/*. Framework adapters live in sibling packages.",
   "license": "MIT",
   "repository": {
