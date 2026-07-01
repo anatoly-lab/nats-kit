@@ -20,16 +20,20 @@ import {
 /** Client port nats-server listens on inside the image. */
 const NATS_CONTAINER_PORT = 4222;
 
+/** Fixed host port so a container restart reuses the SAME host:port the client is pinned to. Uncommon value avoids clashing with a local nats-server on the default 4222. */
+const NATS_HOST_PORT = 44222;
+
 /**
  * Start a real nats-server (JetStream enabled) in a throwaway container.
  *
  * - Image `nats:2`, command `-js` turns on JetStream (needed for streams + KV).
- * - `withExposedPorts(4222)` publishes the client port to a RANDOM host port;
- *   `getMappedPort(4222)` reveals it. The reconnect test relies on a later
- *   `restart()` preserving THIS mapping: `docker restart` keeps the same
- *   container, and published-port bindings live in the container's config, so
- *   the host:port is stable across the bounce. Creating a NEW container instead
- *   would get a fresh random port the already-connected client could not find.
+ * - We bind a FIXED host port (`NATS_HOST_PORT` -> container `NATS_CONTAINER_PORT`)
+ *   precisely SO THAT the reconnect test's `restart()` — a `docker restart` of the
+ *   SAME container — comes back on the identical host:port, keeping the
+ *   already-connected client's frozen server URL valid. A random host port would
+ *   be re-allocated on restart (notably on CI runners), leaving the client
+ *   pointed at a dead port it could never find. `getMappedPort(4222)` still
+ *   resolves this binding for building the initial URL.
  * - The official nats image is minimal (no shell), so `Wait.forListeningPorts`
  *   — which execs a probe INSIDE the container — is not usable; wait on the
  *   server's readiness LOG line instead.
@@ -37,7 +41,7 @@ const NATS_CONTAINER_PORT = 4222;
 export async function startNatsContainer(): Promise<StartedTestContainer> {
   return new GenericContainer("nats:2")
     .withCommand(["-js"])
-    .withExposedPorts(NATS_CONTAINER_PORT)
+    .withExposedPorts({ container: NATS_CONTAINER_PORT, host: NATS_HOST_PORT })
     .withWaitStrategy(Wait.forLogMessage(/Server is ready/))
     // First run has to pull the image; give it room.
     .withStartupTimeout(120_000)
