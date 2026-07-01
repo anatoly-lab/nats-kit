@@ -285,6 +285,43 @@ describe("NatsConnectionRunner — lifecycle", () => {
     await runner.stop();
     await assertion;
   });
+
+  it("stop() completes and closes the connection even when drain times out", async () => {
+    // Regression: if drain() hangs (NATS unreachable at shutdown) the old code
+    // ran drain+close in ONE try, so the drain-timeout rejection skipped
+    // close(). close() is what ends the nc.status() iterator, so monitorStatus
+    // — and the statusMonitorPromise stop() awaits — hung forever. The fix
+    // runs close() unconditionally after a best-effort drain.
+    vi.useFakeTimers();
+    const conn = new FakeConnection();
+    // drain never resolves → the internal 10s race must reject via the timer.
+    conn.drain = () => new Promise<void>(() => {});
+    // close() is a spy that still ends the status stream (as the real client
+    // does), letting the fixed code's monitor loop terminate.
+    const closeSpy = vi.spyOn(conn, "close");
+    connectMock.mockResolvedValueOnce(conn);
+    const runner = new NatsConnectionRunner({}, { logger: silentLogger });
+
+    await runner.start();
+    expect(runner.isConnected()).toBe(true);
+
+    let completed = false;
+    const stopP = runner.stop().then(() => {
+      completed = true;
+    });
+
+    // Advance past the internal 10s drain timeout so the race rejects
+    // deterministically; on the FIXED code stop() then closes and resolves.
+    // (On the UNFIXED code close() is skipped, the status iterator never ends,
+    // and this promise never settles — the test would hang/time out.)
+    await vi.advanceTimersByTimeAsync(10000);
+    await stopP;
+
+    expect(completed).toBe(true);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(conn.closeCalled).toBe(true);
+    expect(runner.getStatus()).toBe(NatsConnectionStatus.Closed);
+  });
 });
 
 describe("NatsConnectionRunner — waitForReady bounds", () => {

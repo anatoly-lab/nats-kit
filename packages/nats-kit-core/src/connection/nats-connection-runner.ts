@@ -359,8 +359,14 @@ export class NatsConnectionRunner {
     this.disconnectSubject.complete();
     this.connectSubject.complete();
 
-    // Drain and close connection
+    // Drain and close connection. These are TWO independent steps: a drain
+    // that times out (NATS unreachable at shutdown) must NOT skip close().
+    // close() is what terminates the nc.status() async iterator, so skipping
+    // it would leave monitorStatus() — and the statusMonitorPromise awaited
+    // below — hanging forever.
     if (this.nc && !this.nc.isClosed()) {
+      // Best-effort drain: race against a timeout so a down server can't hang
+      // shutdown. On failure just log it and fall through to close().
       try {
         const DRAIN_TIMEOUT_MS = 10000;
 
@@ -374,7 +380,15 @@ export class NatsConnectionRunner {
             ),
           ),
         ]);
+      } catch (error) {
+        this.logger.warn(
+          `Error draining NATS connection: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
 
+      // Unconditional close: ALWAYS attempt this regardless of the drain
+      // outcome so the status iterator terminates and shutdown can complete.
+      try {
         await this.nc.close();
         this.currentStatus = NatsConnectionStatus.Closed;
         this.logger.log("NATS connection closed gracefully");
