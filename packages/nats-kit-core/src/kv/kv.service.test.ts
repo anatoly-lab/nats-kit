@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Subject } from "rxjs";
 
-// Mock the KV manager: `new Kvm(conn).create(name, opts)` returns a fresh fake
+// Mock the KV manager: `new Kvm(js).create(name, opts)` returns a fresh fake
 // bucket. `createMock` lets us count (re)fetches.
 const { createMock } = vi.hoisted(() => ({
   createMock: vi.fn(),
@@ -29,7 +29,7 @@ function makeRunner(reconnect$: Subject<void>) {
   return {
     getLogger: () => silentLogger,
     waitForReady: vi.fn().mockResolvedValue(undefined),
-    getConnection: vi.fn(() => ({})),
+    getJetStream: vi.fn(() => ({})),
     onReconnect: () => reconnect$.asObservable(),
   } as unknown as NatsConnectionRunner;
 }

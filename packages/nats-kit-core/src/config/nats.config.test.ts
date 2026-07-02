@@ -14,11 +14,9 @@ describe("NatsConfigSchema", () => {
   });
 
   it("fills nested defaults when a group is provided partially", () => {
-    const cfg = NatsConfigSchema.parse({ reconnect: { reconnectTimeWait: 5000 } });
+    const cfg = NatsConfigSchema.parse({ reconnect: {} });
     expect(cfg.reconnect).toEqual({
-      maxReconnectAttempts: -1,
-      reconnectTimeWait: 5000,
-      maxReconnectTimeWait: 30000,
+      reconnectTimeWait: 2000,
     });
   });
 
@@ -42,5 +40,50 @@ describe("NatsConfigSchema", () => {
 
   it("rejects a non-string in servers", () => {
     expect(() => NatsConfigSchema.parse({ servers: [123] })).toThrow();
+  });
+});
+
+describe("NatsConfigSchema — auth mutual exclusion", () => {
+  it("accepts a single auth method", () => {
+    expect(() => NatsConfigSchema.parse({ token: "t" })).not.toThrow();
+    expect(() =>
+      NatsConfigSchema.parse({ user: "u", pass: "p" }),
+    ).not.toThrow();
+    expect(() => NatsConfigSchema.parse({ nkeySeed: "SUA..." })).not.toThrow();
+    expect(() =>
+      NatsConfigSchema.parse({ credsFile: "/etc/nats/svc.creds" }),
+    ).not.toThrow();
+  });
+
+  it("rejects two auth methods, naming what was provided", () => {
+    expect(() =>
+      NatsConfigSchema.parse({ token: "t", nkeySeed: "SUA..." }),
+    ).toThrow(/token, nkeySeed/);
+    expect(() =>
+      NatsConfigSchema.parse({ user: "u", pass: "p", credsFile: "x.creds" }),
+    ).toThrow(/user\/pass, credsFile/);
+  });
+
+  it("rejects user without pass (and pass without user)", () => {
+    expect(() => NatsConfigSchema.parse({ user: "u" })).toThrow(
+      /user and pass must be provided together/,
+    );
+    expect(() => NatsConfigSchema.parse({ pass: "p" })).toThrow(
+      /user and pass must be provided together/,
+    );
+  });
+
+  it("trims whitespace around nkeySeed (env-var paste hygiene)", () => {
+    // A trailing newline would throw inside the auth handshake — terminal on
+    // reconnect — so the schema strips it before it can reach the wire.
+    const cfg = NatsConfigSchema.parse({ nkeySeed: "  SUA...\n" });
+    expect(cfg.nkeySeed).toBe("SUA...");
+  });
+
+  it("strips the removed `nkey` field (use nkeySeed instead)", () => {
+    // `nkey` duplicated nkeySeed and was never wired downstream; the schema no
+    // longer knows it, so zod strips it like any unknown key.
+    const cfg = NatsConfigSchema.parse({ nkey: "SUA..." });
+    expect("nkey" in cfg).toBe(false);
   });
 });

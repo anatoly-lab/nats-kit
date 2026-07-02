@@ -1,15 +1,24 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// Mock the two @nats-io modules the runner touches at runtime: `connect` (dial)
-// and `jetstream` (client factory). Everything else the runner imports (zod
-// config, status enum, error, logging, telemetry) is real.
+// Mock the two @nats-io functions the runner touches at runtime: `connect`
+// (dial) and `jetstream` (client factory). The rest of the transport module
+// stays REAL (spread from the actual import) so the runner and the tests share
+// the same error classes (ClosedConnectionError, ...) and authenticators.
 const { connectMock, jetstreamMock } = vi.hoisted(() => ({
   connectMock: vi.fn(),
   jetstreamMock: vi.fn(() => ({})),
 }));
-vi.mock("@nats-io/transport-node", () => ({ connect: connectMock }));
+vi.mock("@nats-io/transport-node", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  connect: connectMock,
+}));
 vi.mock("@nats-io/jetstream", () => ({ jetstream: jetstreamMock }));
 
+import {
+  ClosedConnectionError,
+  TimeoutError,
+  type NodeConnectionOptions,
+} from "@nats-io/transport-node";
 import { NatsConnectionRunner } from "./nats-connection-runner.js";
 import { NatsConnectionStatus } from "./connection-status.js";
 import { NatsNotConnectedError } from "../errors/index.js";
@@ -385,7 +394,7 @@ describe("NatsConnectionRunner — guarded / required / withRetry", () => {
     await runner.stop();
   });
 
-  it("withRetry RETRIES a connection-shaped error then succeeds", async () => {
+  it("withRetry RETRIES a ClosedConnectionError then succeeds", async () => {
     const conn = new FakeConnection();
     connectMock.mockResolvedValueOnce(conn);
     const runner = new NatsConnectionRunner({}, { logger: silentLogger });
@@ -394,7 +403,7 @@ describe("NatsConnectionRunner — guarded / required / withRetry", () => {
     let calls = 0;
     const op = vi.fn(() => {
       calls += 1;
-      if (calls === 1) throw new Error("connection closed");
+      if (calls === 1) throw new ClosedConnectionError();
       return "ok";
     });
 
@@ -423,6 +432,110 @@ describe("NatsConnectionRunner — guarded / required / withRetry", () => {
     ).rejects.toThrow("business rule violation");
     expect(op).toHaveBeenCalledTimes(1);
 
+    await runner.stop();
+  });
+
+  it("withRetry does NOT retry a plain Error whose message merely says 'closed connection'", async () => {
+    // Retryability is decided by error CLASS, not message matching — an
+    // application error that happens to mention the connection must propagate.
+    const conn = new FakeConnection();
+    connectMock.mockResolvedValueOnce(conn);
+    const runner = new NatsConnectionRunner({}, { logger: silentLogger });
+    await runner.start();
+
+    const op = vi.fn(() => {
+      throw new Error("closed connection");
+    });
+
+    await expect(
+      runner.withRetry(op, { maxRetries: 3, baseDelayMs: 1 }),
+    ).rejects.toThrow("closed connection");
+    expect(op).toHaveBeenCalledTimes(1);
+
+    await runner.stop();
+  });
+
+  it("withRetry does NOT retry a TimeoutError", async () => {
+    // A timed-out request may already have had side effects server-side;
+    // retrying is an at-least-once decision the caller must make.
+    const conn = new FakeConnection();
+    connectMock.mockResolvedValueOnce(conn);
+    const runner = new NatsConnectionRunner({}, { logger: silentLogger });
+    await runner.start();
+
+    const op = vi.fn(() => {
+      throw new TimeoutError();
+    });
+
+    await expect(
+      runner.withRetry(op, { maxRetries: 3, baseDelayMs: 1 }),
+    ).rejects.toBeInstanceOf(TimeoutError);
+    expect(op).toHaveBeenCalledTimes(1);
+
+    await runner.stop();
+  });
+});
+
+describe("NatsConnectionRunner — connection options", () => {
+  /** Start a runner with `config` and return the options handed to connect(). */
+  async function connectWith(
+    config: Record<string, unknown>,
+  ): Promise<{ runner: NatsConnectionRunner; options: NodeConnectionOptions }> {
+    const conn = new FakeConnection();
+    connectMock.mockResolvedValueOnce(conn);
+    const runner = new NatsConnectionRunner(config, { logger: silentLogger });
+    await runner.start();
+    const options = connectMock.mock.calls[0][0] as NodeConnectionOptions;
+    return { runner, options };
+  }
+
+  it("credsFile → sets an authenticator (file read deferred to the handshake)", async () => {
+    const { runner, options } = await connectWith({
+      credsFile: "/etc/nats/svc.creds",
+    });
+    expect(options.authenticator).toBeDefined();
+    await runner.stop();
+  });
+
+  it("nkeySeed → sets an authenticator", async () => {
+    const { runner, options } = await connectWith({ nkeySeed: "SUANOTAREAL" });
+    expect(options.authenticator).toBeDefined();
+    await runner.stop();
+  });
+
+  it("tls PEM strings map to the inline ca/cert/key fields", async () => {
+    const pem = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----";
+    const { runner, options } = await connectWith({
+      tls: { enabled: true, ca: pem, cert: pem, key: pem },
+    });
+    expect(options.tls).toMatchObject({ ca: pem, cert: pem, key: pem });
+    expect(options.tls?.caFile).toBeUndefined();
+    expect(options.tls?.certFile).toBeUndefined();
+    expect(options.tls?.keyFile).toBeUndefined();
+    await runner.stop();
+  });
+
+  it("tls paths map to the caFile/certFile/keyFile fields", async () => {
+    const { runner, options } = await connectWith({
+      tls: { enabled: true, ca: "/certs/ca.pem", cert: "/certs/cert.pem", key: "/certs/key.pem" },
+    });
+    expect(options.tls).toMatchObject({
+      caFile: "/certs/ca.pem",
+      certFile: "/certs/cert.pem",
+      keyFile: "/certs/key.pem",
+    });
+    expect(options.tls?.ca).toBeUndefined();
+    await runner.stop();
+  });
+
+  it("tls.rejectUnauthorized is passed through", async () => {
+    // `false` here only because `true` is the schema default and would be
+    // indistinguishable from it — this asserts pass-through, not a
+    // recommendation to disable verification.
+    const { runner, options } = await connectWith({
+      tls: { enabled: true, rejectUnauthorized: false },
+    });
+    expect(options.tls?.rejectUnauthorized).toBe(false);
     await runner.stop();
   });
 });

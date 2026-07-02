@@ -70,7 +70,12 @@ export class JetStreamService {
   async getManager(): Promise<JetStreamManager> {
     // Ensure NATS is connected (mirrors getClient()'s guard).
     this.getClient();
-    return await jetstreamManager(this.runner.getConnection());
+    // Pass the runner's JetStream options so admin operations target the same
+    // domain/apiPrefix as the runner's JetStream client.
+    return await jetstreamManager(
+      this.runner.getConnection(),
+      this.runner.getJetStreamOptions(),
+    );
   }
 
   /**

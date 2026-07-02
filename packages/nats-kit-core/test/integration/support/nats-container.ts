@@ -70,9 +70,7 @@ export function makeRunner(
     name: "nats-kit-integration",
     connection: { timeout: 5_000 },
     reconnect: {
-      maxReconnectAttempts: -1,
       reconnectTimeWait: 500,
-      maxReconnectTimeWait: 2_000,
     },
   };
   return new NatsConnectionRunner(config, logger ? { logger } : undefined);

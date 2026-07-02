@@ -137,11 +137,13 @@ export class KvService {
     // (~5s, REJECTS via the explicit-timeout branch) instead of stalling on the
     // 30s default. Callers (watchers / request handlers) retry or degrade.
     await this.runner.waitForReady(KvService.FETCH_BUCKET_READY_TIMEOUT_MS);
-    // v3 removed `js.views.kv()`. Use the KV manager (`Kvm`) instead.
+    // v3 removed `js.views.kv()`. Use the KV manager (`Kvm`) instead,
+    // constructed over the runner's JetStream client (not the raw connection)
+    // so KV admin operations inherit the configured domain/apiPrefix.
     // `Kvm.create()` creates the bucket if missing and otherwise binds to the
     // existing one — preserving the previous create-if-missing semantics
     // (whereas `Kvm.open()` would fail if the bucket does not yet exist).
-    const kvm = new Kvm(this.runner.getConnection());
+    const kvm = new Kvm(this.runner.getJetStream());
     const kv = await kvm.create(bucketName, options);
 
     // Cache for future calls

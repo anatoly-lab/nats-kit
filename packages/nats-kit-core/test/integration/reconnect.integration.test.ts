@@ -57,8 +57,8 @@ describe("NatsConnectionRunner reconnect resilience (real nats-server)", () => {
       });
 
       // 4. NATS is back on the SAME address. The SAME runner instance must
-      // reconnect on its own (maxReconnectAttempts: -1) — no new runner, no new
-      // config. Generous timeout: reconnect is not instant.
+      // reconnect on its own (reconnection is always infinite) — no new runner,
+      // no new config. Generous timeout: reconnect is not instant.
       await bounce;
       await waitUntil(() => runner.isConnected() === true, {
         timeout: 30_000,

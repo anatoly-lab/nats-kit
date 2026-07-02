@@ -1,6 +1,11 @@
+import { readFileSync } from "node:fs";
 import { Subject, type Observable } from "rxjs";
 import {
   connect,
+  credsAuthenticator,
+  nkeyAuthenticator,
+  ClosedConnectionError,
+  ConnectionError,
   type NatsConnection,
   type NodeConnectionOptions,
 } from "@nats-io/transport-node";
@@ -181,19 +186,73 @@ export class NatsConnectionRunner {
         token: this.config.token,
         // Timeout for initial connection attempt (prevents hanging indefinitely)
         timeout: dialTimeout,
-        maxReconnectAttempts: this.config.reconnect?.maxReconnectAttempts ?? -1,
+        // Infinite by contract: the runner keeps the connection alive until
+        // stop(). Finite attempts would leave a dead client behind (the
+        // status iterator ends and nothing re-dials).
+        maxReconnectAttempts: -1,
         reconnectTimeWait: this.config.reconnect?.reconnectTimeWait ?? 2000,
         // Note: maxPayload is a server-side setting, not a client connection option
         // The client automatically respects the server's max_payload setting
       };
 
-      // Add TLS if configured
+      // Authenticator-based auth. The schema refinement guarantees at most one
+      // auth method is configured, so a simple if/else cannot mask anything.
+      if (this.config.credsFile !== undefined) {
+        const credsFile = this.config.credsFile;
+        // Thunk form: the client invokes it on every (re)connect handshake, so
+        // the file is re-read each time and rotated creds are picked up
+        // without a restart. A throw from the thunk during a RECONNECT
+        // handshake closes the client terminally, so a transient read failure
+        // (non-atomic creds rotation, brief unreadability) falls back to the
+        // last successfully read bytes instead of propagating.
+        let lastGoodCreds: Buffer | undefined;
+        connectionOptions.authenticator = credsAuthenticator(() => {
+          try {
+            lastGoodCreds = readFileSync(credsFile);
+            return lastGoodCreds;
+          } catch (error) {
+            if (lastGoodCreds === undefined) {
+              // First read: nothing to fall back to. On initial connect this
+              // rejects connect() and the background retry takes over.
+              throw error;
+            }
+            this.logger.warn(
+              `Failed to re-read creds file, using last good credentials: ${error instanceof Error ? error.message : String(error)}`,
+            );
+            return lastGoodCreds;
+          }
+        });
+      } else if (this.config.nkeySeed !== undefined) {
+        connectionOptions.authenticator = nkeyAuthenticator(
+          new TextEncoder().encode(this.config.nkeySeed),
+        );
+      }
+
+      // Add TLS if configured. ca/cert/key each accept a filesystem path OR an
+      // inline PEM string — PEM content is detected by its "-----BEGIN" marker
+      // and mapped to the inline field, everything else to the *File field.
       if (this.config.tls?.enabled) {
-        connectionOptions.tls = {
-          caFile: this.config.tls.ca,
-          certFile: this.config.tls.cert,
-          keyFile: this.config.tls.key,
+        const { ca, cert, key, rejectUnauthorized } = this.config.tls;
+        const tls: NonNullable<NodeConnectionOptions["tls"]> = {
+          // The node transport merges the user tls object into the options it
+          // hands to node's tls.connect() (verified in transport-node's
+          // node_transport.js), so this is an intentional documented
+          // pass-through that takes effect there.
+          rejectUnauthorized,
         };
+        if (ca !== undefined) {
+          if (ca.includes("-----BEGIN")) tls.ca = ca;
+          else tls.caFile = ca;
+        }
+        if (cert !== undefined) {
+          if (cert.includes("-----BEGIN")) tls.cert = cert;
+          else tls.certFile = cert;
+        }
+        if (key !== undefined) {
+          if (key.includes("-----BEGIN")) tls.key = key;
+          else tls.keyFile = key;
+        }
+        connectionOptions.tls = tls;
       }
 
       this.nc = await this.connectWithOuterTimeout(
@@ -535,6 +594,15 @@ export class NatsConnectionRunner {
   }
 
   /**
+   * The JetStream options (domain/apiPrefix) this runner was configured with.
+   * Exposed so dependent services can construct JetStream managers/clients
+   * bound to the same domain and API prefix as the runner's own client.
+   */
+  getJetStreamOptions(): NatsConfig["jetstream"] {
+    return this.config.jetstream;
+  }
+
+  /**
    * Get raw NATS connection for Core NATS operations (pub/sub)
    *
    * @throws Error if not connected - did you call waitForReady()?
@@ -633,8 +701,12 @@ export class NatsConnectionRunner {
 
   /**
    * Execute a NATS operation with retry on transient failures.
-   * Retries on connection loss with exponential backoff.
+   * Retries on connection-loss errors (NatsNotConnectedError,
+   * ClosedConnectionError, ConnectionError) with exponential backoff.
    * Does NOT retry on application-level errors (those propagate).
+   * Deliberately does NOT retry on TimeoutError either: a timed-out request
+   * may already have had side effects server-side, so retrying is an
+   * at-least-once decision that belongs to the caller.
    *
    * @param operation - The NATS operation to execute
    * @param options - Optional retry configuration
@@ -658,13 +730,12 @@ export class NatsConnectionRunner {
         }
         return await operation();
       } catch (error) {
-        // Only retry on connection-related errors
+        // Only retry on connection-related errors (typed v3 error classes;
+        // message matching would be brittle and would miss/false-match).
         const isRetryable =
           error instanceof NatsNotConnectedError ||
-          (error instanceof Error &&
-            (error.message.includes("CONNECTION_CLOSED") ||
-              error.message.includes("connection closed") ||
-              error.message.includes("DISCONNECT")));
+          error instanceof ClosedConnectionError ||
+          error instanceof ConnectionError;
 
         if (!isRetryable || attempt === maxRetries) {
           throw error;
