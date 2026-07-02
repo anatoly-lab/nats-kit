@@ -6,24 +6,37 @@
 // `forRootAsync` is the primary production pattern (config usually comes from a
 // `ConfigService`).
 //
-// `@Global()` — the NATS connection is an app-wide transport singleton. The
-// builder already marks the module global via its `isGlobal` extra (default
-// true); the decorator is kept as belt-and-suspenders and to make the global
-// intent obvious at the class site. Once configured at the root, every feature
-// module gets `NatsService` / `KvService` / `JetStreamService` without
-// re-importing `NatsModule`. This mirrors the former in-repo `@repo/nats`
-// module, so the re-consume is a near-pure import swap.
+// Global-ness comes ONLY from the builder's `isGlobal` extra (default true),
+// which the extras transform maps onto the DynamicModule `global` flag.
+// Deliberately NO `@Global()` decorator here: Nest treats a module as global
+// when EITHER the dynamic metadata has `global: true` OR the class carries the
+// `@Global()` metadata (`container.isGlobalModule()`), so the decorator would
+// turn an explicit `forRoot({ config, isGlobal: false })` opt-out into a
+// silent no-op. Same recipe as `@nestjs/config`. With the default, once
+// configured at the root every feature module gets `NatsService` / `KvService`
+// / `JetStreamService` without re-importing `NatsModule`. This mirrors the
+// former in-repo `@repo/nats` module, so the re-consume is a near-pure import
+// swap.
+//
+// `NATS_OPTIONS` is exported alongside the services because it is public API
+// (re-exported from the barrel) and consumers may `@Inject(NATS_OPTIONS)` the
+// resolved options. The builder-generated `forRoot` / `forRootAsync` add the
+// options PROVIDER but never export the token; Nest merges this decorator's
+// metadata with the dynamic module's (scanner `reflectProviders` /
+// `reflectExports`), so listing the token here completes the export.
 
-import { Global, Module } from "@nestjs/common";
+import { Module } from "@nestjs/common";
 
-import { NatsConfigurableModuleClass } from "./nats.module-builder.js";
+import {
+  NATS_OPTIONS,
+  NatsConfigurableModuleClass,
+} from "./nats.module-builder.js";
 import { NatsService } from "./nats.service.js";
 import { KvService } from "./kv.service.js";
 import { JetStreamService } from "./jetstream.service.js";
 
-@Global()
 @Module({
   providers: [NatsService, KvService, JetStreamService],
-  exports: [NatsService, KvService, JetStreamService],
+  exports: [NatsService, KvService, JetStreamService, NATS_OPTIONS],
 })
 export class NatsModule extends NatsConfigurableModuleClass {}

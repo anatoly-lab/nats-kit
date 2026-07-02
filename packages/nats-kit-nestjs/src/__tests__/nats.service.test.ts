@@ -1,8 +1,11 @@
 // Lifecycle-bridge + delegation tests for the adapter services.
 //
 // What we pin here:
-//   - `NatsService.onModuleInit` -> `runner.start()`, `onModuleDestroy` ->
-//     `runner.stop()`.
+//   - Nest itself drives the lifecycle bridge: `moduleRef.init()` ->
+//     `runner.start()`, `moduleRef.close()` -> `runner.stop()`. Real hook
+//     dispatch (not manual `onModuleInit()` calls) — Nest duck-types on the
+//     METHOD (`isFunction(instance.onModuleInit)`), so this catches a renamed
+//     or removed hook method (the `implements` clause is erased at runtime).
 //   - A call on the adapter `NatsService` reaches the underlying runner
 //     (delegation), and `getRunner()` exposes it.
 //   - The `KvService` wrapper drives the core `start()` / `stop()` via its
@@ -65,18 +68,22 @@ async function buildNatsService(): Promise<{
 }
 
 describe("NatsService lifecycle bridge", () => {
-  it("onModuleInit starts the runner and onModuleDestroy stops it", async () => {
-    const { nats } = await buildNatsService();
+  // Driven through Nest's real hook dispatch (`moduleRef.init()` /
+  // `moduleRef.close()`), not manual `onModuleInit()` calls — so this fails
+  // if the hook METHODS are renamed or removed. (Nest duck-types on the
+  // method, not the `implements` clause, which is erased at runtime.)
+  it("moduleRef.init() starts the runner and moduleRef.close() stops it", async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [NatsModule.forRoot(options)],
+    }).compile();
 
-    // Clear any lifecycle calls that DI resolution may have already triggered,
-    // so the assertions below observe exactly the explicit hook invocations.
-    startSpy.mockClear();
-    stopSpy.mockClear();
+    // compile() only builds the graph; no lifecycle hook has fired yet.
+    expect(startSpy).not.toHaveBeenCalled();
 
-    await nats.onModuleInit();
+    await moduleRef.init();
     expect(startSpy).toHaveBeenCalledTimes(1);
 
-    await nats.onModuleDestroy();
+    await moduleRef.close();
     expect(stopSpy).toHaveBeenCalledTimes(1);
   });
 });
@@ -118,6 +125,8 @@ describe("NatsService delegation", () => {
 });
 
 describe("KvService lifecycle wrapper", () => {
+  // Same real-dispatch rule as the NatsService bridge test: Nest's
+  // `moduleRef.init()` / `moduleRef.close()` must invoke the hooks.
   it("drives the core KvService start()/stop() via Nest lifecycle hooks", async () => {
     const kvStart = vi
       .spyOn(CoreKvService.prototype, "start")
@@ -129,16 +138,13 @@ describe("KvService lifecycle wrapper", () => {
     const moduleRef = await Test.createTestingModule({
       imports: [NatsModule.forRoot(options)],
     }).compile();
-    const kv = moduleRef.get(KvService);
 
-    kvStart.mockClear();
-    kv.onModuleInit();
+    expect(kvStart).not.toHaveBeenCalled();
+    await moduleRef.init();
     expect(kvStart).toHaveBeenCalledTimes(1);
 
-    kv.onModuleDestroy();
-    expect(kvStop).toHaveBeenCalledTimes(1);
-
     await moduleRef.close();
+    expect(kvStop).toHaveBeenCalledTimes(1);
   });
 
   // Stronger than the call-count test above: pins that the adapter's Nest

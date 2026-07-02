@@ -1,8 +1,18 @@
 // Wiring tests for `NatsModule.forRoot` / `forRootAsync`.
 //
 // What we pin here:
-//   - `forRoot(options)` returns a `@Global` DynamicModule that provides +
-//     exports the three services and binds `NATS_OPTIONS` to the passed value.
+//   - `forRoot(options)` returns a global-by-default DynamicModule that
+//     provides + exports the three services and binds `NATS_OPTIONS` to the
+//     passed value.
+//   - Global scoping is BEHAVIORAL, not just metadata: with the default
+//     (`isGlobal: true`) a non-importing sibling module resolves the services;
+//     with `isGlobal: false` the same graph fails to compile. (Metadata-only
+//     assertions previously missed a stray `@Global()` decorator overriding
+//     the opt-out — Nest ORs the decorator with the dynamic `global` flag.)
+//   - `NATS_OPTIONS` is exported, so a consumer module's provider can
+//     constructor-`@Inject(NATS_OPTIONS)` the resolved options (strict,
+//     import-edge resolution — not `TestingModule.get`'s graph-wide lookup,
+//     which resolves even unexported providers and masks a missing export).
 //   - `forRootAsync({ useFactory, inject })` runs the factory at compile()
 //     time with injected deps, and the resolved options are reachable via
 //     `NATS_OPTIONS`.
@@ -13,7 +23,7 @@
 
 import "reflect-metadata";
 
-import { Injectable, Module } from "@nestjs/common";
+import { Inject, Injectable, Module } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import {
   JetStreamService as CoreJetStreamService,
@@ -53,7 +63,7 @@ afterEach(() => {
 });
 
 describe("NatsModule.forRoot()", () => {
-  it("returns a @Global DynamicModule for NatsModule", () => {
+  it("returns a global-by-default DynamicModule for NatsModule", () => {
     const dm = NatsModule.forRoot(options);
     expect(dm.module).toBe(NatsModule);
     // `setExtras({ isGlobal: true }, …)` maps to the DynamicModule `global` flag.
@@ -107,6 +117,80 @@ describe("NatsModule.forRoot()", () => {
     // The barrel export and the module's provider token are the same class.
     expect(BarrelKvService).toBe(KvService);
     expect(BarrelJetStreamService).toBe(JetStreamService);
+
+    await moduleRef.close();
+  });
+});
+
+// A sibling module that does NOT import `NatsModule` but constructor-injects
+// `NatsService`. Whether its resolution succeeds is exactly what
+// `isGlobal` controls — the behavioral check the metadata-only `dm.global`
+// assertions above cannot provide.
+@Injectable()
+class SiblingConsumer {
+  constructor(public readonly nats: NatsService) {}
+}
+
+@Module({
+  providers: [SiblingConsumer],
+  exports: [SiblingConsumer],
+})
+class SiblingModule {}
+
+describe("NatsModule global scoping (behavioral)", () => {
+  it("isGlobal: true — a non-importing sibling module resolves NatsService", async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [NatsModule.forRoot({ ...options, isGlobal: true }), SiblingModule],
+    }).compile();
+
+    // Constructor injection already ran at compile(); read through it, not via
+    // a graph-wide token lookup.
+    const consumer = moduleRef.get(SiblingConsumer);
+    expect(consumer.nats).toBeInstanceOf(NatsService);
+
+    await moduleRef.close();
+  });
+
+  it("isGlobal: false — the same graph fails to compile (opt-out is real)", async () => {
+    await expect(
+      Test.createTestingModule({
+        imports: [
+          NatsModule.forRoot({ ...options, isGlobal: false }),
+          SiblingModule,
+        ],
+      }).compile(),
+    ).rejects.toThrow(/Nest can't resolve dependencies/);
+  });
+});
+
+// A consumer module that imports `NatsModule.forRoot(...)` and
+// constructor-injects `NATS_OPTIONS`. `isGlobal: false` on purpose: resolution
+// must travel the import->export edge alone, so a missing token export fails
+// compile() instead of being masked by the global registry.
+@Injectable()
+class OptionsConsumer {
+  constructor(
+    @Inject(NATS_OPTIONS) public readonly opts: NatsModuleOptions,
+  ) {}
+}
+
+@Module({
+  imports: [NatsModule.forRoot({ ...options, isGlobal: false })],
+  providers: [OptionsConsumer],
+  exports: [OptionsConsumer],
+})
+class OptionsConsumerModule {}
+
+describe("NATS_OPTIONS export", () => {
+  it("is injectable in an importing module and holds the extras-stripped options", async () => {
+    const moduleRef = await Test.createTestingModule({
+      imports: [OptionsConsumerModule],
+    }).compile();
+
+    const consumer = moduleRef.get(OptionsConsumer);
+    // `omitExtras` strips `isGlobal` before binding, so this is `options`
+    // exactly — the extras knob never leaks into the injected value.
+    expect(consumer.opts).toStrictEqual(options);
 
     await moduleRef.close();
   });
