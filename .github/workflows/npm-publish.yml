@@ -28,11 +28,64 @@ concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 permissions:
   contents: read # checkout the tagged commit
-  id-token: write # npm OIDC trusted publishing
 
 jobs:
+  # The tag is pushed by a human and nothing forces it onto a CI-green commit:
+  # the CI workflow runs independently and this workflow would otherwise
+  # publish an unverified SHA. So the gate travels WITH the trigger — the same
+  # verification ci.yml does, re-run here on the tagged commit, and `publish`
+  # hard-depends on both jobs. Duplicate CI minutes on a release are cheap;
+  # a broken published tarball is not.
+  verify:
+    name: lint + typecheck + test + build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint + typecheck + test + build
+        run: pnpm exec turbo run lint typecheck test build
+
+  integration:
+    name: integration tests (@nats-kit/core, real nats-server)
+    runs-on: ubuntu-latest
+    # Testcontainers pulls the nats image and exercises reconnect windows —
+    # same generous headroom as ci.yml.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.22"
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Integration tests (Testcontainers -> real nats-server)
+        run: pnpm --filter @nats-kit/core test:integration
+
   publish:
     runs-on: ubuntu-latest
+    needs: [verify, integration]
+    # Job-level permissions REPLACE the workflow-level block, so contents:read
+    # must be restated. id-token lives here (not workflow-level) so the
+    # verify/integration jobs never carry the OIDC publish credential.
+    permissions:
+      contents: read
+      id-token: write # npm OIDC trusted publishing
     steps:
       - uses: actions/checkout@v6
 
