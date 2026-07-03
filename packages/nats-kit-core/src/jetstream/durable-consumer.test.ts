@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { runDurableConsumer } from "./durable-consumer.js";
 import type { JetStreamService } from "./jetstream.service.js";
 import type { NatsConnectionRunner } from "../connection/nats-connection-runner.js";
-import type { JsMsg } from "@nats-io/jetstream";
+import { JetStreamApiError, type JsMsg } from "@nats-io/jetstream";
 
 /** Controllable async-iterable stand-in for `consumer.consume()`. */
 class FakeMessages {
@@ -207,6 +207,121 @@ describe("runDurableConsumer", () => {
     await expect(done).resolves.toBeUndefined();
     expect(createOrUpdateConsumer).not.toHaveBeenCalled();
     expect(consume).not.toHaveBeenCalled();
+  });
+
+  it("REJECTS promptly (no retry, no consume) when the server rejects the consumer config", async () => {
+    // The real error shape @nats-io/jetstream 3.4.0 surfaces for an
+    // immutable-field update rejection: JetStreamApiError with server
+    // err_code 10012 (JSConsumerCreateErrF) and the field in the description.
+    const rejection = new JetStreamApiError({
+      code: 400,
+      err_code: 10012,
+      description: "deliver policy can not be updated",
+    });
+    const consume = vi.fn().mockResolvedValue(new FakeMessages());
+    const createOrUpdateConsumer = vi.fn().mockRejectedValue(rejection);
+    const jetStreamService = {
+      waitForStream: vi.fn().mockResolvedValue(undefined),
+      createOrUpdateConsumer,
+      getConsumer: vi.fn().mockResolvedValue({ consume }),
+    } as unknown as JetStreamService;
+    const natsService = {
+      waitForReady: vi.fn().mockResolvedValue(undefined),
+    } as unknown as NatsConnectionRunner;
+
+    const done = runDurableConsumer({
+      stream: "S",
+      consumerConfig: { name: "c" },
+      handler: vi.fn(),
+      signal: new AbortController().signal,
+      jetStreamService,
+      natsService,
+      // Would park the loop for 5s per iteration if the fatal path ever
+      // regressed into a retry — the prompt rejection below would then hang.
+      reconnectDelayMs: 5000,
+    });
+
+    await expect(done).rejects.toBe(rejection);
+    // One attempt only: a permanent config error must not be retried.
+    expect(createOrUpdateConsumer).toHaveBeenCalledTimes(1);
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it("keeps retrying when consumer setup fails with ConsumerNotFound (transient)", async () => {
+    const notFound = new JetStreamApiError({
+      code: 404,
+      err_code: 10014,
+      description: "consumer not found",
+    });
+    const messages = new FakeMessages();
+    const consume = vi.fn().mockResolvedValue(messages);
+    const createOrUpdateConsumer = vi
+      .fn()
+      .mockRejectedValueOnce(notFound)
+      .mockResolvedValue({});
+    const jetStreamService = {
+      waitForStream: vi.fn().mockResolvedValue(undefined),
+      createOrUpdateConsumer,
+      getConsumer: vi.fn().mockResolvedValue({ consume }),
+    } as unknown as JetStreamService;
+    const natsService = {
+      waitForReady: vi.fn().mockResolvedValue(undefined),
+    } as unknown as NatsConnectionRunner;
+
+    const abort = new AbortController();
+    const done = runDurableConsumer({
+      stream: "S",
+      consumerConfig: { name: "c" },
+      handler: vi.fn(),
+      signal: abort.signal,
+      jetStreamService,
+      natsService,
+      reconnectDelayMs: 1,
+    });
+
+    // First iteration fails (not-found) → 1ms backoff → second iteration
+    // succeeds and starts consuming: the loop stayed alive.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(createOrUpdateConsumer).toHaveBeenCalledTimes(2);
+    expect(consume).toHaveBeenCalledTimes(1);
+
+    abort.abort();
+    await expect(done).resolves.toBeUndefined();
+  });
+
+  it("keeps retrying on connection-class errors (transient)", async () => {
+    const messages = new FakeMessages();
+    const consume = vi.fn().mockResolvedValue(messages);
+    const createOrUpdateConsumer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("CONNECTION_CLOSED"))
+      .mockResolvedValue({});
+    const jetStreamService = {
+      waitForStream: vi.fn().mockResolvedValue(undefined),
+      createOrUpdateConsumer,
+      getConsumer: vi.fn().mockResolvedValue({ consume }),
+    } as unknown as JetStreamService;
+    const natsService = {
+      waitForReady: vi.fn().mockResolvedValue(undefined),
+    } as unknown as NatsConnectionRunner;
+
+    const abort = new AbortController();
+    const done = runDurableConsumer({
+      stream: "S",
+      consumerConfig: { name: "c" },
+      handler: vi.fn(),
+      signal: abort.signal,
+      jetStreamService,
+      natsService,
+      reconnectDelayMs: 1,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(createOrUpdateConsumer).toHaveBeenCalledTimes(2);
+    expect(consume).toHaveBeenCalledTimes(1);
+
+    abort.abort();
+    await expect(done).resolves.toBeUndefined();
   });
 
   it("stops the fresh message iterator when abort fires between consumer setup and consume() resolving", async () => {

@@ -1,4 +1,5 @@
 import {
+  JetStreamApiError,
   type ConsumeOptions,
   type ConsumerConfig,
   type ConsumerMessages,
@@ -72,6 +73,34 @@ export interface RunDurableConsumerOptions {
 const DEFAULT_RECONNECT_DELAY_MS = 5000;
 
 /**
+ * Server err_codes that mean the CONSUMER CONFIG ITSELF was rejected —
+ * a permanent error that no amount of retrying fixes (not exported by
+ * `JetStreamApiCodes` in @nats-io/jetstream 3.4.0, hence the local constant):
+ * - 10012 `JSConsumerCreateErrF` — wraps consumer config validation
+ *   failures, including every immutable-field rejection ("deliver policy
+ *   can not be updated", "ack policy can not be updated", ...).
+ *
+ * Deliberately NOT here:
+ * - 10013 `JSConsumerNameExistErr`: per the official Go client mapping it is
+ *   a CREATE-path "name already in use" code, i.e. transient from this
+ *   loop's perspective (createOrUpdateConsumer resolves it internally; a
+ *   stray one on the next iteration self-heals). Classifying it fatal would
+ *   permanently halt a healthy consumer on a clustered create race — worse
+ *   than the visible retry the loop does instead.
+ * - 10014/10149 (consumer missing — transient, the loop recreates it) and
+ *   anything that isn't a JetStreamApiError (connection-class errors —
+ *   transient by definition).
+ */
+const FATAL_CONSUMER_CONFIG_CODES: readonly number[] = [10012];
+
+function isConsumerConfigRejected(error: unknown): boolean {
+  return (
+    error instanceof JetStreamApiError &&
+    FATAL_CONSUMER_CONFIG_CODES.includes(error.code)
+  );
+}
+
+/**
  * runDurableConsumer
  *
  * Resilient JetStream durable-consumer loop with automatic reconnect.
@@ -82,12 +111,23 @@ const DEFAULT_RECONNECT_DELAY_MS = 5000;
  * Each (re)connect iteration:
  * 1. `natsService.waitForReady()` — wait for a live NATS connection
  * 2. `jetStreamService.waitForStream(stream)` — wait for the stream owner
- * 3. `createOrUpdateConsumer` — idempotently (re)create the durable consumer
+ * 3. `createOrUpdateConsumer` — create the durable if missing, otherwise
+ *    apply `consumerConfig` to it (so config changes take effect on deploy)
  * 4. `consumer.consume()` and iterate, dispatching each message to `handler`
  * 5. On error or unexpected loop exit: wait `reconnectDelayMs`, go to 1
  *
  * Aborting `signal` stops the in-flight `consume()` iterator and exits
  * the loop; the returned promise resolves once shutdown completes.
+ *
+ * FATAL path: if the server rejects the consumer config itself (e.g. an
+ * immutable field like deliver_policy/ack_policy was changed on an existing
+ * durable — `JetStreamApiError` err_code 10012), the loop does NOT
+ * retry: retrying a permanent config rejection would silently halt message
+ * processing in an infinite throw-sleep-retry loop. Instead the returned
+ * promise REJECTS with the server's error (its message names the offending
+ * field). Callers should surface that rejection — it means the config needs
+ * a fix + redeploy (or the existing consumer must be deleted). Transient
+ * errors (consumer/stream not found, connection loss) are still retried.
  *
  * Usage:
  * ```typescript
@@ -171,7 +211,9 @@ export async function runDurableConsumer(
         });
         if (signal.aborted) break;
 
-        // Idempotent: gets the existing consumer or creates it.
+        // Idempotent: creates the consumer or applies the config to the
+        // existing one. A server-side config rejection propagates to the
+        // catch below and is classified as FATAL.
         await jetStreamService.createOrUpdateConsumer(stream, consumerConfig);
         if (signal.aborted) break;
 
@@ -224,6 +266,16 @@ export async function runDurableConsumer(
             "Consumer aborted (expected during shutdown)",
           );
           return;
+        }
+        // A consumer-config rejection is PERMANENT: retrying would loop
+        // forever while silently processing nothing. Reject the returned
+        // promise so the caller can surface it (config fix + redeploy).
+        if (isConsumerConfigRejected(error)) {
+          logger?.error(
+            { err: error, ...logContext },
+            "JetStream consumer config rejected by server - fatal, not retrying",
+          );
+          throw error;
         }
         logger?.error(
           { err: error, ...logContext },

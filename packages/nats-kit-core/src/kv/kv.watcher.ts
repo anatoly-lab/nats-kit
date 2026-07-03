@@ -35,7 +35,9 @@ export type WatchEvent<T> =
  * - Proper lifecycle management with AbortSignal
  * - Automatic cleanup in finally block
  * - Emits 'clear' event on reconnect to trigger cache invalidation
- * - Emits 'ready' event after initial delivery
+ * - Emits 'ready' event after initial delivery — immediately after the watch
+ *   starts when the bucket is empty (an empty bucket delivers no entries, so
+ *   there is no delta===0 entry to signal catch-up on)
  * - Transforms KV entries using provided function
  * - Ends cleanly (generator returns) when the runner stops — a completed
  *   reconnect subject can never emit again, so waiting would strand forever
@@ -116,19 +118,47 @@ export async function* watchWithReconnect<T>(
         // Start watching bucket
         currentWatcher = await kv.watch();
 
+        // v3.4.0 `kv.watch()` delivers NOTHING for an empty bucket (its
+        // internal consumer starts with num_pending === 0), so the delta===0
+        // READY below can never fire and "buffer until READY" consumers
+        // would hang on first boot. KvWatchOptions has no initialization
+        // callback in 3.4.0 (`initializedFn` was a nats.js v2 API), so probe
+        // emptiness explicitly and emit READY up front. Race window: a put
+        // landing between watch() and status() flips `values` > 0 and that
+        // entry then arrives with delta === 0, firing the delta-based READY
+        // instead; a put landing after an "empty" status() arrives as a
+        // plain EVENT following the (already correct) READY.
+        // The probe is best-effort: a transient status() failure (request
+        // timeout on a healthy connection) must NOT park the just-created
+        // watch until the next reconnect — degrade to the delta-based READY
+        // below, which is only wrong for the truly-empty-bucket case the
+        // probe exists for.
+        let bucketKnownEmpty = false;
+        try {
+          bucketKnownEmpty = (await kv.status()).values === 0;
+        } catch (statusError) {
+          logger?.warn(
+            { err: statusError, bucket: bucketName },
+            "KV status probe failed - READY will rely on entry delivery",
+          );
+        }
+        if (bucketKnownEmpty) {
+          initialDeliveryComplete = true;
+          yield { type: WatchEventType.READY };
+        }
+
         for await (const entry of currentWatcher) {
           if (signal?.aborted) break;
+
+          // NATS KV watch delivers all existing keys first; delta === 0
+          // means this entry catches us up to current state. Decided BEFORE
+          // transform so a throwing transform on exactly this entry cannot
+          // delay READY until the next unrelated update.
+          const catchesUp = !initialDeliveryComplete && entry.delta === 0;
 
           try {
             const data = transform(entry);
             yield { type: WatchEventType.EVENT, data };
-
-            // NATS KV watch delivers all existing keys first
-            // delta === 0 means we've caught up to current state
-            if (!initialDeliveryComplete && entry.delta === 0) {
-              initialDeliveryComplete = true;
-              yield { type: WatchEventType.READY };
-            }
           } catch (transformError) {
             // Yield error event instead of logging to console
             yield {
@@ -138,6 +168,11 @@ export async function* watchWithReconnect<T>(
                   ? transformError
                   : new Error(String(transformError)),
             };
+          }
+
+          if (catchesUp) {
+            initialDeliveryComplete = true;
+            yield { type: WatchEventType.READY };
           }
         }
 

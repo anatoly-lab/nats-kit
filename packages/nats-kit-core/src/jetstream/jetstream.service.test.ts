@@ -11,10 +11,20 @@ vi.mock("@nats-io/jetstream", async (importOriginal) => ({
   jetstreamManager: jetstreamManagerMock,
 }));
 
+import { JetStreamApiError } from "@nats-io/jetstream";
 import { JetStreamService } from "./jetstream.service.js";
 import type { NatsConnectionRunner } from "../connection/nats-connection-runner.js";
 import { NatsNotConnectedError } from "../errors/index.js";
 import type { NatsLogger } from "../logging/logger.types.js";
+
+/** Real JetStreamApiError carrying a server err_code (matched via `.code`). */
+function apiError(errCode: number, description: string): JetStreamApiError {
+  return new JetStreamApiError({
+    code: 400,
+    err_code: errCode,
+    description,
+  });
+}
 
 const silentLogger: NatsLogger = {
   log: () => {},
@@ -76,6 +86,103 @@ describe("JetStreamService — getManager", () => {
       NatsNotConnectedError,
     );
     expect(jetstreamManagerMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("JetStreamService — createOrUpdateConsumer", () => {
+  const consumerInfo = { name: "c", config: { durable_name: "c" } };
+
+  function makeService(consumers: {
+    update: ReturnType<typeof vi.fn>;
+    add: ReturnType<typeof vi.fn>;
+  }) {
+    const { runner } = makeRunner();
+    jetstreamManagerMock.mockResolvedValue({ consumers });
+    return new JetStreamService(runner);
+  }
+
+  it("creates the consumer (with the passed config) when it does not exist", async () => {
+    const update = vi
+      .fn()
+      .mockRejectedValue(apiError(10014, "consumer not found"));
+    const add = vi.fn().mockResolvedValue(consumerInfo);
+    const svc = makeService({ update, add });
+
+    const config = { durable_name: "c", max_deliver: 5 };
+    const info = await svc.createOrUpdateConsumer("S", config);
+
+    expect(add).toHaveBeenCalledWith("S", config);
+    expect(info).toBe(consumerInfo);
+  });
+
+  it("updates the existing consumer — the passed config is applied, not discarded", async () => {
+    const update = vi.fn().mockResolvedValue(consumerInfo);
+    const add = vi.fn();
+    const svc = makeService({ update, add });
+
+    const config = { durable_name: "c", max_deliver: 7 };
+    const info = await svc.createOrUpdateConsumer("S", config);
+
+    expect(update).toHaveBeenCalledWith("S", "c", config);
+    expect(add).not.toHaveBeenCalled();
+    // Same return shape as the create path.
+    expect(info).toBe(consumerInfo);
+  });
+
+  it("falls through to create ONCE when the consumer is deleted between info and update (10149)", async () => {
+    const update = vi
+      .fn()
+      .mockRejectedValue(apiError(10149, "consumer does not exist"));
+    const add = vi.fn().mockResolvedValue(consumerInfo);
+    const svc = makeService({ update, add });
+
+    const info = await svc.createOrUpdateConsumer("S", { name: "c" });
+
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(info).toBe(consumerInfo);
+  });
+
+  it("falls through to update ONCE when the consumer is created concurrently (add → 10148)", async () => {
+    const update = vi
+      .fn()
+      .mockRejectedValueOnce(apiError(10014, "consumer not found"))
+      .mockResolvedValueOnce(consumerInfo);
+    const add = vi
+      .fn()
+      .mockRejectedValue(apiError(10148, "consumer already exists"));
+    const svc = makeService({ update, add });
+
+    const info = await svc.createOrUpdateConsumer("S", { name: "c" });
+
+    // update → not found → add → already exists → update. No loop.
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(add).toHaveBeenCalledTimes(1);
+    expect(info).toBe(consumerInfo);
+  });
+
+  it("throws (without touching the server) when config has neither name nor durable_name", async () => {
+    const update = vi.fn();
+    const add = vi.fn();
+    const svc = makeService({ update, add });
+
+    await expect(svc.createOrUpdateConsumer("S", {})).rejects.toThrow(
+      /must set name or durable_name/,
+    );
+    expect(update).not.toHaveBeenCalled();
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it("propagates an immutable-field rejection (10012) from update without creating", async () => {
+    const rejection = apiError(10012, "deliver policy can not be updated");
+    const update = vi.fn().mockRejectedValue(rejection);
+    const add = vi.fn();
+    const svc = makeService({ update, add });
+
+    await expect(
+      svc.createOrUpdateConsumer("S", { durable_name: "c" }),
+    ).rejects.toBe(rejection);
+    expect(add).not.toHaveBeenCalled();
   });
 });
 

@@ -78,6 +78,9 @@ describe("watchWithReconnect", () => {
         watchers.push(w);
         return w;
       }),
+      // Non-empty bucket: READY must come from the delta===0 entry, not the
+      // empty-bucket probe.
+      status: vi.fn(async () => ({ values: 2 })),
     } as unknown as KV;
     const natsService = {
       onReconnect: vi.fn(() => reconnect$.asObservable()),
@@ -98,8 +101,10 @@ describe("watchWithReconnect", () => {
     })();
 
     await tick();
-    // First: CLEAR yielded before the watch begins.
+    // First: CLEAR yielded before the watch begins. Non-empty bucket → no
+    // early READY (pins the pre-existing delta-based behavior).
     expect(events[0]).toEqual({ type: WatchEventType.CLEAR });
+    expect(events.map((e) => e.type)).not.toContain(WatchEventType.READY);
 
     watchers[0]!.push(entry("a", 1));
     await tick();
@@ -140,6 +145,7 @@ describe("watchWithReconnect", () => {
         watchers.push(w);
         return w;
       }),
+      status: vi.fn(async () => ({ values: 2 })),
     } as unknown as KV;
     const natsService = {
       onReconnect: vi.fn(() => reconnect$.asObservable()),
@@ -188,6 +194,7 @@ describe("watchWithReconnect", () => {
         watchers.push(w);
         return w;
       }),
+      status: vi.fn(async () => ({ values: 2 })),
     } as unknown as KV;
     const natsService = {
       onReconnect: vi.fn(() => reconnect$.asObservable()),
@@ -238,7 +245,11 @@ describe("watchWithReconnect", () => {
         return w;
       });
     // The concrete v3 Bucket carries the name as a plain `bucket` property.
-    const kv = { watch, bucket: "tunnels" } as unknown as KV;
+    const kv = {
+      watch,
+      bucket: "tunnels",
+      status: vi.fn(async () => ({ values: 2 })),
+    } as unknown as KV;
     const natsService = {
       onReconnect: vi.fn(() => reconnect$.asObservable()),
     } as unknown as NatsConnectionRunner;
@@ -274,6 +285,165 @@ describe("watchWithReconnect", () => {
     reconnect$.next();
     await tick();
     expect(watch).toHaveBeenCalledTimes(2);
+
+    abort.abort();
+    await tick();
+    await consume;
+  });
+
+  it("emits READY immediately on an empty bucket (watch delivers no entries)", async () => {
+    const reconnect$ = new Subject<void>();
+    const watchers: FakeWatcher[] = [];
+    const kv = {
+      watch: vi.fn(async () => {
+        const w = new FakeWatcher();
+        watchers.push(w);
+        return w;
+      }),
+      // Empty bucket: v3 kv.watch() will never deliver a delta===0 entry, so
+      // READY must come from the status() probe.
+      status: vi.fn(async () => ({ values: 0 })),
+    } as unknown as KV;
+    const natsService = {
+      onReconnect: vi.fn(() => reconnect$.asObservable()),
+    } as unknown as NatsConnectionRunner;
+
+    const abort = new AbortController();
+    const events: WatchEvent<string>[] = [];
+    const consume = (async () => {
+      for await (const ev of watchWithReconnect(
+        kv,
+        natsService,
+        (e: KvEntry) => e.key,
+        abort.signal,
+      )) {
+        events.push(ev);
+      }
+    })();
+
+    await tick();
+    // READY without any entry ever arriving.
+    expect(events.map((e) => e.type)).toEqual([
+      WatchEventType.CLEAR,
+      WatchEventType.READY,
+    ]);
+
+    // A later put is a plain EVENT — and no duplicate READY (the flag was
+    // already set by the empty-bucket probe).
+    watchers[0]!.push(entry("late", 0));
+    await tick();
+    expect(events.map((e) => e.type)).toEqual([
+      WatchEventType.CLEAR,
+      WatchEventType.READY,
+      WatchEventType.EVENT,
+    ]);
+
+    abort.abort();
+    await tick();
+    await consume;
+  });
+
+  it("degrades to delta-based READY (and does not park) when the status probe fails", async () => {
+    const reconnect$ = new Subject<void>();
+    const watchers: FakeWatcher[] = [];
+    const kv = {
+      watch: vi.fn(async () => {
+        const w = new FakeWatcher();
+        watchers.push(w);
+        return w;
+      }),
+      // Transient status() failure (e.g. request timeout on a healthy
+      // connection): the probe is best-effort — the watch must keep running
+      // and READY must still arrive via the delta===0 path.
+      status: vi.fn(async () => {
+        throw new Error("request timed out");
+      }),
+    } as unknown as KV;
+    const natsService = {
+      onReconnect: vi.fn(() => reconnect$.asObservable()),
+    } as unknown as NatsConnectionRunner;
+    const warn = vi.fn();
+    const logger = { log: vi.fn(), warn, error: vi.fn() };
+
+    const abort = new AbortController();
+    const events: WatchEvent<string>[] = [];
+    const consume = (async () => {
+      for await (const ev of watchWithReconnect(
+        kv,
+        natsService,
+        (e: KvEntry) => e.key,
+        abort.signal,
+        logger,
+      )) {
+        events.push(ev);
+      }
+    })();
+
+    await tick();
+    // Probe failed: logged, no premature READY, watch NOT parked.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(events.map((e) => e.type)).toEqual([WatchEventType.CLEAR]);
+
+    // Entries still flow and the delta===0 entry produces READY.
+    watchers[0]!.push(entry("a", 0));
+    await tick();
+    expect(events.map((e) => e.type)).toEqual([
+      WatchEventType.CLEAR,
+      WatchEventType.EVENT,
+      WatchEventType.READY,
+    ]);
+
+    abort.abort();
+    await tick();
+    await consume;
+  });
+
+  it("still emits READY when the transform throws on exactly the delta===0 entry", async () => {
+    const reconnect$ = new Subject<void>();
+    const watchers: FakeWatcher[] = [];
+    const kv = {
+      watch: vi.fn(async () => {
+        const w = new FakeWatcher();
+        watchers.push(w);
+        return w;
+      }),
+      status: vi.fn(async () => ({ values: 2 })),
+    } as unknown as KV;
+    const natsService = {
+      onReconnect: vi.fn(() => reconnect$.asObservable()),
+    } as unknown as NatsConnectionRunner;
+
+    const abort = new AbortController();
+    const events: WatchEvent<string>[] = [];
+    const consume = (async () => {
+      for await (const ev of watchWithReconnect(
+        kv,
+        natsService,
+        (e: KvEntry) => {
+          if (e.key === "bad-last") throw new Error("transform boom");
+          return e.key;
+        },
+        abort.signal,
+      )) {
+        events.push(ev);
+      }
+    })();
+
+    await tick();
+    watchers[0]!.push(entry("good", 1));
+    await tick();
+    // The catch-up entry itself fails to transform: consumers must still get
+    // READY (previously it was delayed until the next unrelated update).
+    watchers[0]!.push(entry("bad-last", 0));
+    await tick();
+
+    const types = events.map((e) => e.type);
+    expect(types).toEqual([
+      WatchEventType.CLEAR,
+      WatchEventType.EVENT, // good
+      WatchEventType.ERROR, // bad-last transform failure
+      WatchEventType.READY, // still emitted for the delta===0 entry
+    ]);
 
     abort.abort();
     await tick();

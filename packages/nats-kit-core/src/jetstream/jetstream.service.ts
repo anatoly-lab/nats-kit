@@ -145,37 +145,85 @@ export class JetStreamService {
   /**
    * Create or update a consumer
    *
+   * Semantics: update-if-exists, create-if-missing. When the consumer already
+   * exists, `jsm.consumers.update()` fetches the server config and MERGES
+   * `config` over it before sending (nats.js 3.4.0 behavior), so passing
+   * immutable fields with UNCHANGED values is fine — only fields present in
+   * `config` are (re)applied. NATS rejects changes to immutable fields
+   * (durable_name, deliver_policy, ack_policy, replay_policy, start
+   * sequence/time, ...) with a `JetStreamApiError` naming the offending field
+   * (server err_code 10012); that error propagates to the caller.
+   *
+   * Note: nats.js 3.4.0 also exposes `ConsumerApiAction.CreateOrUpdate` via
+   * `jsm.consumers.add(stream, cfg, { action })`, but that sends `config` as
+   * the FULL consumer config without the merge — omitted fields would be
+   * treated as changes back to server defaults. The update-then-create dance
+   * below keeps the merge semantics for partial configs.
+   *
    * @param streamName - Name of the stream
-   * @param config - Consumer configuration
-   * @returns Consumer info
+   * @param config - Consumer configuration; MUST set `name` or `durable_name`
+   * @returns Consumer info (same shape from both the create and update paths)
+   * @throws Error if config sets neither `name` nor `durable_name`
    * @throws NatsNotConnectedError if NATS is not connected
+   * @throws JetStreamApiError if the server rejects the config (e.g. an
+   *   immutable field changed on an existing consumer)
    */
   async createOrUpdateConsumer(
     streamName: string,
     config: Partial<ConsumerConfig>,
   ) {
-    const js = this.getClient();
+    // `||` (not `??`): the lib itself normalizes an empty-string `name` to
+    // undefined, so `{ name: "", durable_name: "x" }` must pick the durable.
+    const consumerName = config.name || config.durable_name;
+    if (!consumerName) {
+      // Guard: without a name this used to fall through to
+      // `js.consumers.get(stream, undefined)` downstream, which silently
+      // creates an ORDERED consumer instead of failing.
+      throw new Error(
+        "createOrUpdateConsumer: config must set name or durable_name",
+      );
+    }
+
+    const jsm = await this.getManager();
+
+    // Update-first mirrors createOrUpdateStream. update() does info() +
+    // merge + action:"update"; a missing consumer surfaces as
+    // ConsumerNotFound (10014, from its internal info()) or — when the
+    // consumer is deleted between that info() and the update request — as
+    // "consumer does not exist" (10149). Both mean: fall through to create.
     try {
-      // Try to get existing consumer
-      const consumer = await js.consumers.get(
+      const info = await jsm.consumers.update(
         streamName,
-        config.name || config.durable_name!,
+        consumerName,
+        config,
       );
-      this.logger.log(
-        `Got existing consumer: ${config.name || config.durable_name}`,
-      );
-      return await consumer.info();
+      this.logger.log(`Updated consumer: ${consumerName}`);
+      return info;
     } catch (error) {
-      // Only create if consumer not found, otherwise rethrow
-      if (this.isConsumerNotFound(error)) {
-        const jsm = await this.getManager();
-        const info = await jsm.consumers.add(streamName, config);
-        this.logger.log(
-          `Created consumer: ${config.name || config.durable_name}`,
-        );
-        return info;
+      if (!this.isConsumerMissing(error)) {
+        throw error;
       }
-      throw error;
+    }
+
+    try {
+      const info = await jsm.consumers.add(streamName, config);
+      this.logger.log(`Created consumer: ${consumerName}`);
+      return info;
+    } catch (error) {
+      // Race: consumer created concurrently between the failed update and
+      // this add (action:"create" rejects an existing consumer with a
+      // different config). Fall through to a single update — no loop; a
+      // second failure propagates.
+      if (!this.isConsumerAlreadyExists(error)) {
+        throw error;
+      }
+      const info = await jsm.consumers.update(
+        streamName,
+        consumerName,
+        config,
+      );
+      this.logger.log(`Updated consumer (created concurrently): ${consumerName}`);
+      return info;
     }
   }
 
@@ -396,7 +444,44 @@ export class JetStreamService {
       error.message.toLowerCase().includes("consumer not found")
     );
   }
+
+  /**
+   * Detect "the consumer is gone" for the create-or-update flow: either
+   * ConsumerNotFound (10014, from `update()`'s internal info()) or
+   * "consumer does not exist" (10149 `JSConsumerDoesNotExist`, returned when
+   * an action:"update" request races a delete). 10149 is not part of the
+   * `JetStreamApiCodes` export surface, hence the local constant.
+   */
+  private isConsumerMissing(error: unknown): boolean {
+    return (
+      this.isConsumerNotFound(error) ||
+      (error instanceof JetStreamApiError &&
+        error.code === JS_CONSUMER_DOES_NOT_EXIST)
+    );
+  }
+
+  /**
+   * Detect "a consumer with this name already exists" from an
+   * action:"create" request (verified against nats-server errors.json; none
+   * of these codes are exported by `JetStreamApiCodes` in 3.4.0):
+   * - 10148 `JSConsumerAlreadyExists` — create raced a concurrent create and
+   *   the existing config differs
+   * - 10013 `JSConsumerNameExistErr` — name-registration race / older servers
+   * - 10105 `JSConsumerExistingActiveErr` — durable exists and is active
+   */
+  private isConsumerAlreadyExists(error: unknown): boolean {
+    return (
+      error instanceof JetStreamApiError &&
+      (CONSUMER_ALREADY_EXISTS_CODES as readonly number[]).includes(error.code)
+    );
+  }
 }
+
+// Server err_codes used by createOrUpdateConsumer's race handling; these are
+// real nats-server codes (server/errors.json) that @nats-io/jetstream 3.4.0
+// does NOT include in its `JetStreamApiCodes` export.
+const JS_CONSUMER_DOES_NOT_EXIST = 10149;
+const CONSUMER_ALREADY_EXISTS_CODES = [10148, 10013, 10105] as const;
 
 /**
  * Sleep that resolves early when the signal aborts (listener-cancelled timer,
