@@ -32,6 +32,11 @@ Correctness pass over config wiring, the NestJS module, and the connection lifec
 - `runDurableConsumer` treats a server rejection of the consumer config itself (immutable-field change, err_code 10012) as **fatal**: its promise rejects with the server's error naming the offending field, instead of retrying forever and silently halting message processing. Surface that rejection — it means the config needs a fix (or the server-side consumer must be deleted). Transient errors are still retried.
 - `watchWithReconnect` now emits `READY` immediately for an **empty bucket** (previously "buffer until READY" consumers hung on first boot until the first put), and `READY` is no longer delayed when the transform throws on the final catch-up entry.
 
+**Added: complete type surface + real documentation (both packages)**
+
+- Both barrels now re-export every `@nats-io/*` type reachable from a public signature (`NatsConnection`, `JetStreamClient`, `JetStreamManager`, `Stream`, `Consumer`, `ConsumeOptions`, `ConsumerInfo`, `StreamInfo`, `PubAck`, `KvStatus`, `MsgHdrs`, ...) plus the runtime values consumers need: `headers()`, `JetStreamApiError` + `JetStreamApiCodes` (for `instanceof` + `.code` checks on the new fatal rejection), and `ClosedConnectionError`/`ConnectionError`. Consumers never need a direct `@nats-io/*` dependency.
+- The placeholder READMEs are replaced with real documentation: full config reference, connection/JetStream/KV semantics, NestJS module usage, and health-probe guidance.
+
 **Fixed (@nats-kit/nestjs)**
 
 - `forRoot({ isGlobal: false })` now actually scopes the module (a stray `@Global()` decorator made the opt-out a silent no-op).

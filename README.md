@@ -1,47 +1,57 @@
 # nats-kit
 
-Monorepo for the `@nats-kit/*` library family — a framework-agnostic toolkit
-for NATS JetStream + KV, with a thin NestJS adapter.
-
-> **STATUS: STEP 1 skeleton.** This repo currently contains only the monorepo
-> tooling and two placeholder packages. No business logic has been extracted
-> yet — the real NATS core (connection runner, KV service, JetStream service,
-> helpers) moves in a later step.
+Monorepo for the `@nats-kit/*` library family — a toolkit for NATS
+JetStream + KV built on the nats.js v3 modular packages (`@nats-io/*`), with a
+framework-free core and a thin NestJS adapter.
 
 ## Packages
 
-| Package            | Directory                  | Role                                                                 |
-| ------------------ | -------------------------- | ------------------------------------------------------------------- |
-| `@nats-kit/core`   | `packages/nats-kit-core`   | Framework-free core. NATS JetStream/KV over `@nats-io/*`. No NestJS. |
-| `@nats-kit/nestjs` | `packages/nats-kit-nestjs` | NestJS adapter. The only package allowed to import `@nestjs/*`.      |
+| Package | Directory | Role |
+| --- | --- | --- |
+| [`@nats-kit/core`](packages/nats-kit-core) | `packages/nats-kit-core` | Framework-free core: connection lifecycle runner, JetStream/KV services, resilient consume/subscribe/watch helpers. No NestJS. |
+| [`@nats-kit/nestjs`](packages/nats-kit-nestjs) | `packages/nats-kit-nestjs` | NestJS adapter: `forRoot`/`forRootAsync` dynamic module + injectable services. The only package allowed to import `@nestjs/*`. |
 
-Both packages ship **dual CJS + ESM** builds via [tshy](https://github.com/isaacs/tshy)
-and version in **lockstep** (see `fixed` in `.changeset/config.json`).
+Both packages ship **dual CJS + ESM** builds via
+[tshy](https://github.com/isaacs/tshy) and version in **lockstep** (see
+`fixed` in `.changeset/config.json`). Each package's README is its npm landing
+page and documents its API.
 
 ## Toolchain
 
-- **Package manager:** pnpm `11.6.0` (`packageManager` field is authoritative)
-- **Node:** `>=22.22.0` (`.nvmrc` pins `22.22`)
-- **Monorepo runner:** Turborepo `2.10.0`
-- **Build tool:** tshy `4.1.3` (dual `dist/esm` + `dist/commonjs`)
-- **Language:** TypeScript `6.0.3` (`NodeNext`, strict)
-- **Tests:** Vitest `4.1.9` (no suites yet)
+- **Package manager:** pnpm (the `packageManager` field is authoritative)
+- **Node:** `>=22.22.0` (`.nvmrc`)
+- **Monorepo runner:** Turborepo
+- **Build:** tshy (dual `dist/esm` + `dist/commonjs`)
+- **Language:** TypeScript (`NodeNext`, strict)
+- **Tests:** Vitest (unit + Testcontainers-based integration suites)
 - **Versioning/publish:** Changesets (`fixed` lockstep group)
 
-## Common commands
+## Development
 
 ```bash
-pnpm install        # wire the workspace
-pnpm build          # turbo run build (dual CJS+ESM for both packages)
-pnpm typecheck      # turbo run typecheck
-pnpm lint           # turbo run lint
-pnpm test           # turbo run test (passWithNoTests until suites land)
-pnpm changeset      # describe a change + choose a semver bump
-pnpm version-packages  # consume changesets, bump versions, write CHANGELOGs
+pnpm install          # wire the workspace
+pnpm build            # turbo run build
+pnpm typecheck        # turbo run typecheck (--force)
+pnpm lint             # turbo run lint
+pnpm test             # turbo run test (unit)
+pnpm ci               # lint + typecheck + test + build
+
+# Integration tests (require Docker; spin up a NATS server via Testcontainers)
+pnpm --filter @nats-kit/core test:integration
 ```
 
-## Publishing
+## Releasing
 
-Publishing is tag-triggered and lockstep — see `.github/workflows/npm-publish.yml`.
-Before the first publish works, a human must create the `@nats-kit` npm org and
-configure npmjs.org trusted-publisher (OIDC) bindings for both packages.
+Changesets drive versioning:
+
+```bash
+pnpm changeset          # describe the change + pick a semver bump
+pnpm version-packages   # consume changesets, bump versions, write CHANGELOGs
+```
+
+Publishing is tag-triggered and lockstep — see
+`.github/workflows/npm-publish.yml`.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

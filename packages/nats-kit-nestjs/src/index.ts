@@ -71,20 +71,39 @@ export { runDurableConsumer } from "@nats-kit/core";
 export type { RunDurableConsumerOptions } from "@nats-kit/core";
 
 // Commonly used @nats-io/* types + values (re-exported by the core barrel, so
-// consumers get them without a direct `@nats-io/*` dependency)
-export type { KV, KvEntry, KvOptions, KvPutOptions } from "@nats-kit/core";
+// consumers get them without a direct `@nats-io/*` dependency). Mirrors the
+// core barrel 1:1 — every @nats-io type reachable from a public signature,
+// plus the runtime values (`headers()`, error classes for `instanceof`).
+export type { KV, KvEntry, KvOptions, KvPutOptions, KvStatus } from "@nats-kit/core";
 export type {
+  JetStreamClient,
+  JetStreamManager,
+  Stream,
+  Consumer,
   ConsumerMessages,
+  ConsumeOptions,
   JsMsg,
   ConsumerConfig,
   StreamConfig,
+  ConsumerInfo,
+  StreamInfo,
+  PubAck,
+  JetStreamAccountStats,
+  NatsConnection,
   Subscription,
   Msg,
+  MsgHdrs,
+  WithRequired,
 } from "@nats-kit/core";
 export {
+  headers,
   RequestError,
   TimeoutError,
   NoRespondersError,
+  ClosedConnectionError,
+  ConnectionError,
+  JetStreamApiError,
+  JetStreamApiCodes,
   DeliverPolicy,
   AckPolicy,
   RetentionPolicy,
