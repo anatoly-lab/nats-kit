@@ -92,6 +92,11 @@ export class NatsConnectionRunner {
   private retryTimeout?: ReturnType<typeof setTimeout>;
   private isShuttingDown = false;
   private connectAttempt = 0;
+  // True while a connect() dial is in flight. Together with `this.nc` this
+  // makes attemptConnection idempotent: a second start() (or a start() racing
+  // a background retry) must never open a second connection — the first would
+  // leak live, since nothing would ever close it.
+  private connectInFlight = false;
 
   constructor(
     config: NatsConfig | Partial<NatsConfig>,
@@ -147,6 +152,10 @@ export class NatsConnectionRunner {
    * Start the connection lifecycle (was the NestJS `onModuleInit`).
    * Attempts to establish a NATS connection. On failure, starts background
    * retry instead of throwing.
+   *
+   * Idempotent: a second start() while connected — or while a dial is already
+   * in flight — logs a warning and returns without dialing (a second live
+   * connection would leak, since nothing would ever close it).
    */
   async start(): Promise<void> {
     await this.attemptConnection();
@@ -159,6 +168,26 @@ export class NatsConnectionRunner {
   private async attemptConnection(): Promise<void> {
     if (this.isShuttingDown) {
       return;
+    }
+
+    // Idempotency guard: if a connection already exists or a dial is in
+    // flight, do NOT dial again — a duplicate start() (or a start() racing a
+    // background retry that already fired) would leak the first connection.
+    if (this.nc !== undefined || this.connectInFlight) {
+      this.logger.warn(
+        "NATS connection already established or dial in flight - ignoring duplicate connect attempt",
+      );
+      return;
+    }
+    this.connectInFlight = true;
+
+    // A user start() can also race a SCHEDULED (not yet fired) background
+    // retry: cancel the pending timer so it can't double-dial after this
+    // attempt settles. (A timer that already fired is covered by the
+    // in-flight guard above.)
+    if (this.retryTimeout) {
+      clearTimeout(this.retryTimeout);
+      this.retryTimeout = undefined;
     }
 
     this.connectAttempt += 1;
@@ -255,11 +284,33 @@ export class NatsConnectionRunner {
         connectionOptions.tls = tls;
       }
 
-      this.nc = await this.connectWithOuterTimeout(
+      const nc = await this.connectWithOuterTimeout(
         connectionOptions,
         outerTimeout,
       );
-      this.js = jetstream(this.nc, this.config.jetstream);
+
+      // stop() may have completed while the dial was in flight: it saw no
+      // `this.nc`, had nothing to close, and returned. Adopting this
+      // connection now would leak it live forever (maxReconnectAttempts: -1
+      // means it never closes itself and keeps the process alive). Close it
+      // best-effort and bail WITHOUT assigning state or starting the monitor
+      // — same rationale as the late-arrival guard in connectWithOuterTimeout.
+      if (this.isShuttingDown) {
+        this.logger.warn(
+          "NATS connect resolved during shutdown - closing fresh connection",
+        );
+        try {
+          await nc.close();
+        } catch (error) {
+          this.logger.warn(
+            `Error closing connection opened during shutdown: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        return;
+      }
+
+      this.nc = nc;
+      this.js = jetstream(nc, this.config.jetstream);
 
       this.currentStatus = NatsConnectionStatus.Connected;
 
@@ -270,7 +321,7 @@ export class NatsConnectionRunner {
 
       this.resolveReady();
       this.logger.log(
-        { server: this.nc.getServer(), attempt: this.connectAttempt },
+        { server: nc.getServer(), attempt: this.connectAttempt },
         "NATS connected",
       );
 
@@ -311,6 +362,8 @@ export class NatsConnectionRunner {
 
       // Schedule retry instead of crashing
       this.scheduleRetry();
+    } finally {
+      this.connectInFlight = false;
     }
   }
 
@@ -426,23 +479,29 @@ export class NatsConnectionRunner {
     if (this.nc && !this.nc.isClosed()) {
       // Best-effort drain: race against a timeout so a down server can't hang
       // shutdown. On failure just log it and fall through to close().
+      let drainTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         const DRAIN_TIMEOUT_MS = 10000;
 
         // Race drain against timeout to prevent hanging on shutdown
         await Promise.race([
           this.nc.drain(),
-          new Promise((_, reject) =>
-            setTimeout(
+          new Promise((_, reject) => {
+            drainTimer = setTimeout(
               () => reject(new Error("Drain timeout")),
               DRAIN_TIMEOUT_MS,
-            ),
-          ),
+            );
+          }),
         ]);
       } catch (error) {
         this.logger.warn(
           `Error draining NATS connection: ${error instanceof Error ? error.message : String(error)}`,
         );
+      } finally {
+        // clearTimeout (not unref) for portability: unref() is Node-specific,
+        // and without clearing, a CLEAN shutdown would leave this timer live
+        // holding the process open for up to the full drain timeout.
+        if (drainTimer) clearTimeout(drainTimer);
       }
 
       // Unconditional close: ALWAYS attempt this regardless of the drain
@@ -469,14 +528,15 @@ export class NatsConnectionRunner {
    * Runs in background until connection is closed
    */
   private async monitorStatus(): Promise<void> {
-    if (!this.nc) return;
+    const nc = this.nc;
+    if (!nc) return;
 
     try {
-      for await (const status of this.nc.status()) {
+      for await (const status of nc.status()) {
         switch (status.type) {
           case "disconnect":
             this.currentStatus = NatsConnectionStatus.Disconnected;
-            this.logger.warn(`NATS disconnected from ${this.nc.getServer()}`);
+            this.logger.warn(`NATS disconnected from ${nc.getServer()}`);
             // Mint a fresh pending readyPromise (only if the previous one
             // already settled) so a waitForReady() issued while disconnected
             // waits for the NEXT (re)connect instead of resolving instantly.
@@ -493,7 +553,7 @@ export class NatsConnectionRunner {
 
           case "reconnect":
             this.currentStatus = NatsConnectionStatus.Connected;
-            this.logger.log(`NATS reconnected to ${this.nc.getServer()}`);
+            this.logger.log(`NATS reconnected to ${nc.getServer()}`);
             // Resolve the (possibly freshly-minted) ready promise for waiters.
             this.resolveReady();
             this.reconnectSubject.next();
@@ -513,6 +573,15 @@ export class NatsConnectionRunner {
             break;
 
           case "ldm":
+            // Lame Duck Mode: the SERVER is draining for maintenance and the
+            // client will migrate to another server — informational, not a
+            // data-loss condition (that's "slowConsumer" below).
+            this.logger.warn(
+              "NATS server entering lame duck mode - connection will migrate to another server",
+            );
+            break;
+
+          case "slowConsumer":
             this.logger.warn(
               "NATS slow consumer detected - messages may be lost",
             );
@@ -524,6 +593,71 @@ export class NatsConnectionRunner {
         `Error in NATS status monitor: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
+
+    // The status iterator only ends (or throws) once the underlying
+    // connection closed. If that wasn't stop()'s doing, the close was
+    // terminal (auth expiry, server-forced close) and nothing else re-dials.
+    await this.handleUnexpectedClose(nc);
+  }
+
+  /**
+   * Handle the status iterator ending WITHOUT stop() being called — a
+   * terminal close (auth expiry, server-forced close, ...). Without this the
+   * runner would be a zombie: stale Connected status, a finished monitor, and
+   * nothing ever re-dialing. Logs the close cause (the only place that
+   * diagnostic exists), flips to Disconnected with the same ready-promise
+   * dance as the "disconnect" status case, drops the dead connection object,
+   * and schedules a background re-dial — so "stay connected until stop()"
+   * holds for ALL close causes.
+   */
+  private async handleUnexpectedClose(nc: NatsConnection): Promise<void> {
+    if (this.isShuttingDown) {
+      return; // normal shutdown: stop() owns the close
+    }
+
+    // At this point closed() resolves immediately with the close cause
+    // (or void when the server gave none).
+    let reason: Error | void;
+    try {
+      reason = await nc.closed();
+    } catch (error) {
+      reason = error instanceof Error ? error : new Error(String(error));
+    }
+    // stop() may have started while awaiting closed(); from here the
+    // shutdown path owns all state, so don't disturb it.
+    if (this.isShuttingDown) {
+      return;
+    }
+
+    const err =
+      reason instanceof Error
+        ? reason
+        : new Error("NATS connection closed without a cause");
+    this.logger.error(
+      { err },
+      "NATS connection closed unexpectedly - scheduling reconnect",
+    );
+    emitTelemetry(this.telemetry, (t) => t.onError?.("close", err), this.logger);
+
+    this.currentStatus = NatsConnectionStatus.Disconnected;
+    // Same dance as the "disconnect" status case: a waitForReady() issued
+    // from here on must wait for the NEXT connect.
+    if (this.readySettled) {
+      this.readyPromise = this.createReadyPromise();
+    }
+    this.disconnectSubject.next();
+
+    // The connection object is dead: drop the references so getConnection()/
+    // getJetStream() fail fast instead of handing out a corpse, and so the
+    // re-dial below passes attemptConnection's idempotency guard. Guarded to
+    // never clobber a (theoretical) newer connection.
+    if (this.nc === nc) {
+      this.nc = undefined;
+      this.js = undefined;
+    }
+
+    // Re-dial with a fresh connection (guards isShuttingDown internally).
+    this.scheduleRetry();
   }
 
   /**
@@ -655,7 +789,13 @@ export class NatsConnectionRunner {
   }
 
   /**
-   * Observable that emits when NATS disconnects
+   * Observable that emits when NATS disconnects.
+   *
+   * LEVEL, not edge: one outage can emit more than once (the client's
+   * "disconnect" status fires first; if the close then turns out to be
+   * terminal, handleUnexpectedClose emits again as it hands off to the
+   * re-dial path). Subscribers must treat emissions idempotently rather
+   * than counting or pairing them with reconnects.
    */
   onDisconnect(): Observable<void> {
     return this.disconnectSubject.asObservable();

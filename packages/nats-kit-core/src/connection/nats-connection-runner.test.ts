@@ -80,9 +80,11 @@ class FakeStatus {
 
 class FakeConnection {
   statusStream = new FakeStatus();
-  closed = false;
+  closedFlag = false;
   drainCalled = false;
   closeCalled = false;
+  /** Cause reported by closed() — set to simulate a terminal close error. */
+  closedReason: Error | undefined = undefined;
   getServer(): string {
     return "nats://fake:4222";
   }
@@ -90,14 +92,18 @@ class FakeConnection {
     return this.statusStream;
   }
   isClosed(): boolean {
-    return this.closed;
+    return this.closedFlag;
+  }
+  /** Mirrors NatsConnection.closed(): resolves with the close cause (or void). */
+  closed(): Promise<void | Error> {
+    return Promise.resolve(this.closedReason);
   }
   async drain(): Promise<void> {
     this.drainCalled = true;
   }
   async close(): Promise<void> {
     this.closeCalled = true;
-    this.closed = true;
+    this.closedFlag = true;
     // Closing ends the status iterator (as the real client does), so the
     // background monitor loop terminates and `stop()` can await it.
     this.statusStream.end();
@@ -330,6 +336,131 @@ describe("NatsConnectionRunner — lifecycle", () => {
     expect(closeSpy).toHaveBeenCalledTimes(1);
     expect(conn.closeCalled).toBe(true);
     expect(runner.getStatus()).toBe(NatsConnectionStatus.Closed);
+  });
+});
+
+describe("NatsConnectionRunner — shutdown races", () => {
+  it("stop() during an in-flight connect closes the fresh connection instead of adopting it", async () => {
+    const conn = new FakeConnection();
+    const deferred = new Deferred<FakeConnection>();
+    connectMock.mockReturnValueOnce(deferred.promise);
+    const runner = new NatsConnectionRunner({}, { logger: silentLogger });
+
+    const startP = runner.start(); // dial in flight, this.nc still undefined
+    await runner.stop(); // sees nothing to close and completes
+
+    // The dial resolves AFTER stop() finished. Without the shutdown re-check
+    // this connection would be adopted live (maxReconnectAttempts: -1 keeps
+    // the process alive forever) with a status monitor running.
+    deferred.resolve(conn);
+    await startP;
+
+    expect(conn.closeCalled).toBe(true);
+    expect(runner.isConnected()).toBe(false);
+    // Never adopted: no JetStream client was built and getConnection throws.
+    expect(jetstreamMock).not.toHaveBeenCalled();
+    expect(() => runner.getConnection()).toThrow();
+  });
+
+  it("re-dials after a terminal close (status iterator ends without stop())", async () => {
+    vi.useFakeTimers();
+    const conn1 = new FakeConnection();
+    conn1.closedReason = new Error("authentication expired");
+    const conn2 = new FakeConnection();
+    connectMock.mockResolvedValueOnce(conn1).mockResolvedValueOnce(conn2);
+    const telemetry = { onError: vi.fn() };
+    const runner = new NatsConnectionRunner(
+      {},
+      { logger: silentLogger, telemetry },
+    );
+
+    const disconnects: number[] = [];
+    runner.onDisconnect().subscribe(() => disconnects.push(1));
+
+    await runner.start();
+    expect(runner.isConnected()).toBe(true);
+
+    // Server-forced terminal close: the status iterator ends WITHOUT stop()
+    // (and without close() being driven by us).
+    conn1.statusStream.end();
+    // Flush the terminal-close handler (a chain of already-resolved awaits).
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(runner.isConnected()).toBe(false);
+    // The handler logs+emits the close cause (missing entirely before) ...
+    expect(telemetry.onError).toHaveBeenCalledWith("close", conn1.closedReason);
+    // ... signals dependents ...
+    expect(disconnects).toHaveLength(1);
+    // ... and schedules a re-dial (scheduleRetry flips to Reconnecting).
+    expect(runner.getStatus()).toBe(NatsConnectionStatus.Reconnecting);
+
+    // The retry timer fires → a fresh connection restores Connected.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(connectMock).toHaveBeenCalledTimes(2);
+    expect(runner.isConnected()).toBe(true);
+
+    vi.useRealTimers();
+    await runner.stop();
+    expect(conn2.closeCalled).toBe(true);
+  });
+
+  it("double-start() dials exactly once (concurrent and sequential)", async () => {
+    const conn = new FakeConnection();
+    connectMock.mockResolvedValue(conn);
+    const runner = new NatsConnectionRunner({}, { logger: silentLogger });
+
+    // Concurrent: the second start() sees the dial in flight and returns.
+    await Promise.all([runner.start(), runner.start()]);
+    expect(connectMock).toHaveBeenCalledTimes(1);
+
+    // Sequential: a start() after connect sees the live connection.
+    await runner.start();
+    expect(connectMock).toHaveBeenCalledTimes(1);
+    expect(runner.isConnected()).toBe(true);
+
+    await runner.stop();
+  });
+
+  it("start() during a scheduled background retry cancels the pending timer (no double-dial)", async () => {
+    vi.useFakeTimers();
+    const conn = new FakeConnection();
+    connectMock
+      .mockRejectedValueOnce(new Error("dial failed"))
+      .mockResolvedValue(conn);
+    const runner = new NatsConnectionRunner({}, { logger: silentLogger });
+
+    await runner.start(); // fails → background retry scheduled (2000ms)
+    expect(connectMock).toHaveBeenCalledTimes(1);
+
+    await runner.start(); // user retry: dials now AND cancels the timer
+    expect(connectMock).toHaveBeenCalledTimes(2);
+    expect(runner.isConnected()).toBe(true);
+    // Pins the timer-CANCEL directly: without the clearTimeout at dial start
+    // the stale retry timer would still be pending here (its eventual firing
+    // is separately blocked by the nc-guard, so the dial count below can't
+    // distinguish the two protections).
+    expect(vi.getTimerCount()).toBe(0);
+
+    // The old timer must not produce a third dial.
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(connectMock).toHaveBeenCalledTimes(2);
+
+    vi.useRealTimers();
+    await runner.stop();
+  });
+
+  it("stop() leaves no timers running (drain-race timer is cleared)", async () => {
+    vi.useFakeTimers();
+    const conn = new FakeConnection();
+    connectMock.mockResolvedValueOnce(conn);
+    const runner = new NatsConnectionRunner({}, { logger: silentLogger });
+    await runner.start();
+
+    await runner.stop();
+
+    // Before the fix the un-cleared 10s drain-race timer held a clean
+    // shutdown's process open for the full timeout.
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

@@ -1,5 +1,6 @@
 import { type Msg, type Subscription } from "@nats-io/transport-node";
 import { type NatsConnectionLike } from "../connection/nats-connection-like.js";
+import { waitForReconnectOrAbort } from "../connection/wait-for-reconnect.js";
 import { type NatsLogger } from "../logging/logger.types.js";
 
 /**
@@ -67,8 +68,10 @@ const DEFAULT_RECONNECT_DELAY_MS = 0;
  * Aborting `signal` unsubscribes the in-flight subscription, stops the
  * for-await loop, and resolves the returned promise — even while waiting for a
  * reconnect (the wait is abortable, so a mid-life abort never strands the
- * loop). Run one independent call per subject (each with its own
- * `AbortController`) to manage many subscriptions concurrently.
+ * loop). If the runner stops first (its reconnect subject completes), the loop
+ * also ends cleanly — a stopped runner can never signal another reconnect.
+ * Run one independent call per subject (each with its own `AbortController`)
+ * to manage many subscriptions concurrently.
  *
  * Usage:
  * ```typescript
@@ -113,10 +116,10 @@ export async function subscribeWithReconnect(
   signal.addEventListener("abort", stopSubscription);
 
   try {
-    // Clean shutdown relies on the consumer being aborted BEFORE the
-    // `onReconnect()` subject completes: a framework typically destroys the
-    // consumer services (which own the AbortController) before the runner
-    // completes the subject, so `signal.aborted` is already true here.
+    // Loop until aborted — or until the runner stops first: a completed
+    // `onReconnect()` subject is detected as a TERMINAL outcome by the
+    // reconnect wait below, so a runner.stop() that beats the consumer's
+    // abort ends the loop cleanly instead of spinning against a dead runner.
     while (!signal.aborted) {
       try {
         // Wait for a live connection before subscribing.
@@ -126,6 +129,13 @@ export async function subscribeWithReconnect(
         subscription = queue
           ? nc.subscribe(subject, { queue })
           : nc.subscribe(subject);
+
+        // The abort listener may have fired while awaiting waitForReady()
+        // above — when `subscription` was still null and stopSubscription a
+        // no-op — and it never fires again. Re-check now that the
+        // subscription exists so shutdown can't park the for-await below on
+        // a live subscription forever (the inner finally unsubscribes it).
+        if (signal.aborted) break;
 
         for await (const msg of subscription) {
           if (signal.aborted) break;
@@ -168,65 +178,22 @@ export async function subscribeWithReconnect(
 
       // Wait for the next reconnect tick before resubscribing. Abortable, so a
       // mid-life abort exits immediately instead of stranding until the next
-      // reconnect (or shutdown completing the subject).
-      await waitForReconnectOrAbort(natsService, signal);
+      // reconnect.
+      const outcome = await waitForReconnectOrAbort(natsService, signal);
+      if (outcome === "completed") {
+        // The reconnect subject completed: the runner stopped and can never
+        // signal another reconnect. Treating this like a reconnect would
+        // hot-spin (waitForReady settles instantly, subscribe throws, and the
+        // completed subject "signals" synchronously — a microtask-speed loop
+        // at 100% CPU). Terminal: exit the loop cleanly.
+        logger?.log(logContext, "NATS runner stopped - ending subscription loop");
+        return;
+      }
     }
   } finally {
     stopSubscription();
     signal.removeEventListener("abort", stopSubscription);
   }
-}
-
-/**
- * Resolve on the next `onReconnect()` emission, on abort, or when the
- * reconnect subject completes (shutdown) — never hangs.
- */
-function waitForReconnectOrAbort(
-  natsService: NatsConnectionLike,
-  signal: AbortSignal,
-): Promise<void> {
-  if (signal.aborted) {
-    return Promise.resolve();
-  }
-
-  return new Promise<void>((resolve) => {
-    let settled = false;
-    // Holder so the callbacks can unsubscribe even when the subject emits
-    // `complete` SYNCHRONOUSLY during `.subscribe()` (a completed RxJS subject
-    // does), i.e. before the `subscription` assignment below would otherwise
-    // have run. `let` (not `const`) is required precisely because `settle` reads
-    // this holder before the single assignment; a `const` initialised at the
-    // subscribe call would be in the TDZ during a synchronous `complete`.
-    // eslint-disable-next-line prefer-const
-    let subscription: { unsubscribe(): void } | undefined;
-
-    // Function declarations (hoisted) so the two can reference each other
-    // without a temporal-dead-zone hazard.
-    function settle(): void {
-      if (settled) return;
-      settled = true;
-      subscription?.unsubscribe();
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }
-    function onAbort(): void {
-      settle();
-    }
-
-    signal.addEventListener("abort", onAbort, { once: true });
-
-    subscription = natsService.onReconnect().subscribe({
-      next: settle,
-      error: settle,
-      complete: settle, // subject completed on shutdown
-    });
-
-    // If the subject completed synchronously above, `settle` already ran while
-    // `subscription` was still undefined; unsubscribe the now-assigned holder.
-    if (settled) {
-      subscription.unsubscribe();
-    }
-  });
 }
 
 /**

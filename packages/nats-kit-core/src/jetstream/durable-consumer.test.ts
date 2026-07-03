@@ -166,4 +166,87 @@ describe("runDurableConsumer", () => {
     abort.abort();
     await expect(done).resolves.toBeUndefined();
   });
+
+  it("returns promptly when abort fires during waitForStream, without ever calling consume()", async () => {
+    let resolveWaitForStream!: () => void;
+    const consume = vi.fn().mockResolvedValue(new FakeMessages());
+    const createOrUpdateConsumer = vi.fn().mockResolvedValue({});
+    const jetStreamService = {
+      // Controllable hang: the loop is parked here when the abort fires.
+      waitForStream: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveWaitForStream = resolve;
+          }),
+      ),
+      createOrUpdateConsumer,
+      getConsumer: vi.fn().mockResolvedValue({ consume }),
+    } as unknown as JetStreamService;
+    const natsService = {
+      waitForReady: vi.fn().mockResolvedValue(undefined),
+    } as unknown as NatsConnectionRunner;
+
+    const abort = new AbortController();
+    const done = runDurableConsumer({
+      stream: "S",
+      consumerConfig: { name: "c" },
+      handler: vi.fn(),
+      signal: abort.signal,
+      jetStreamService,
+      natsService,
+    });
+
+    await tick();
+    // Abort while parked in waitForStream: the abort listener runs while
+    // `messages` is null (stopMessages is a no-op) and never fires again.
+    abort.abort();
+    // The (abort-aware) waitForStream resolves early; the loop must bail
+    // BEFORE creating/consuming instead of starting to consume post-shutdown.
+    resolveWaitForStream();
+
+    await expect(done).resolves.toBeUndefined();
+    expect(createOrUpdateConsumer).not.toHaveBeenCalled();
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it("stops the fresh message iterator when abort fires between consumer setup and consume() resolving", async () => {
+    const messages = new FakeMessages();
+    let resolveConsume!: (m: FakeMessages) => void;
+    const consume = vi.fn(
+      () =>
+        new Promise<FakeMessages>((resolve) => {
+          resolveConsume = resolve;
+        }),
+    );
+    const jetStreamService = {
+      waitForStream: vi.fn().mockResolvedValue(undefined),
+      createOrUpdateConsumer: vi.fn().mockResolvedValue({}),
+      getConsumer: vi.fn().mockResolvedValue({ consume }),
+    } as unknown as JetStreamService;
+    const natsService = {
+      waitForReady: vi.fn().mockResolvedValue(undefined),
+    } as unknown as NatsConnectionRunner;
+
+    const abort = new AbortController();
+    const done = runDurableConsumer({
+      stream: "S",
+      consumerConfig: { name: "c" },
+      handler: vi.fn(),
+      signal: abort.signal,
+      jetStreamService,
+      natsService,
+    });
+
+    await tick();
+    expect(consume).toHaveBeenCalledTimes(1);
+    // Abort while consume() is in flight — the last window the abort listener
+    // misses (`messages` still null when it runs).
+    abort.abort();
+    resolveConsume(messages);
+
+    // The post-assignment re-check must stop the fresh iterator and exit
+    // instead of parking the for-await on an idle stream forever.
+    await expect(done).resolves.toBeUndefined();
+    expect(messages.stopCalled).toBe(true);
+  });
 });

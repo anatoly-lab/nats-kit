@@ -149,23 +149,42 @@ export async function runDurableConsumer(
   try {
     while (!signal.aborted) {
       try {
+        // `signal.aborted` is re-checked after EVERY awaited setup step below:
+        // an abort that fires mid-await runs the abort listener while
+        // `messages` is still null (stopMessages is a no-op), and the event
+        // never fires again — without these re-checks the loop would proceed
+        // to consume() AFTER shutdown and park in the for-await forever on an
+        // idle stream. `break` runs the inner finally (stopMessages) and then
+        // exits the while directly.
+
         // Wait for a live connection before touching JetStream.
         await natsService.waitForReady();
+        if (signal.aborted) break;
 
-        // Wait for the stream owner (no-op when the stream exists).
+        // Wait for the stream owner (no-op when the stream exists). The
+        // signal makes the poll abort-aware; on abort it RESOLVES early
+        // without the stream existing — covered by the re-check below.
         await jetStreamService.waitForStream(stream, {
           timeout: streamWaitTimeoutMs,
           retryInterval: streamWaitRetryIntervalMs,
+          signal,
         });
+        if (signal.aborted) break;
 
         // Idempotent: gets the existing consumer or creates it.
         await jetStreamService.createOrUpdateConsumer(stream, consumerConfig);
+        if (signal.aborted) break;
 
         const consumer = await jetStreamService.getConsumer(
           stream,
           consumerName,
         );
+        if (signal.aborted) break;
+
         messages = await consumer.consume(consumeOptions);
+        // Last re-check AFTER `messages` is assigned: an abort during the
+        // consume() await itself is the one window the listener still misses.
+        if (signal.aborted) break;
 
         for await (const msg of messages) {
           if (signal.aborted) break;

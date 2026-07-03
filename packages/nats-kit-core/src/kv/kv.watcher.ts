@@ -1,7 +1,8 @@
 import { type KV, type KvEntry, type KvWatchEntry } from "@nats-io/kv";
 import { type QueuedIterator } from "@nats-io/transport-node";
-import { firstValueFrom } from "rxjs";
 import { type NatsConnectionLike } from "../connection/nats-connection-like.js";
+import { waitForReconnectOrAbort } from "../connection/wait-for-reconnect.js";
+import { type NatsLogger } from "../logging/logger.types.js";
 
 /**
  * Watch event type constants
@@ -36,6 +37,8 @@ export type WatchEvent<T> =
  * - Emits 'clear' event on reconnect to trigger cache invalidation
  * - Emits 'ready' event after initial delivery
  * - Transforms KV entries using provided function
+ * - Ends cleanly (generator returns) when the runner stops — a completed
+ *   reconnect subject can never emit again, so waiting would strand forever
  *
  * Usage:
  * ```typescript
@@ -66,6 +69,8 @@ export type WatchEvent<T> =
  * @param natsService - NATS connection for reconnect events
  * @param transform - Function to transform KV entries
  * @param signal - AbortSignal for cancellation
+ * @param logger - Optional logger; watch failures (permissions, deleted
+ *   bucket, ...) are logged at error level instead of being swallowed
  * @yields Watch events (clear, ready, or data)
  */
 export async function* watchWithReconnect<T>(
@@ -73,11 +78,18 @@ export async function* watchWithReconnect<T>(
   natsService: NatsConnectionLike,
   transform: (entry: KvEntry) => T,
   signal?: AbortSignal,
+  logger?: NatsLogger,
 ): AsyncGenerator<WatchEvent<T>> {
   // v3 `kv.watch()` yields `KvWatchEntry` (a `KvEntry` plus `isUpdate`), so the
   // iterator is typed accordingly; `transform` still accepts a `KvEntry` since
   // `KvWatchEntry` is assignable to it.
   let currentWatcher: QueuedIterator<KvWatchEntry> | null = null;
+
+  // The KV interface only exposes the bucket name via the async `status()`;
+  // the concrete v3 `Bucket` implementation carries it as a plain `bucket`
+  // property. Read it defensively for log context only.
+  const maybeBucket = (kv as unknown as { bucket?: unknown }).bucket;
+  const bucketName = typeof maybeBucket === "string" ? maybeBucket : "unknown";
 
   // Cleanup function
   const cleanup = () => {
@@ -132,14 +144,27 @@ export async function* watchWithReconnect<T>(
         // If we exit normally (not aborted), connection was lost
         if (!signal?.aborted) {
           cleanup();
-          // Wait for reconnect event before retrying
-          await firstValueFrom(natsService.onReconnect());
+          // Wait for the reconnect event before retrying. "completed" is
+          // TERMINAL — the runner stopped and can never emit again — so end
+          // the generator cleanly (the consumer's for-await just finishes)
+          // instead of crashing it (firstValueFrom used to reject with an
+          // opaque rxjs EmptyError here).
+          const outcome = await waitForReconnectOrAbort(natsService, signal);
+          if (outcome === "completed") return;
         }
-      } catch {
+      } catch (error) {
+        // Surface real watch failures (permissions, deleted bucket, ...) —
+        // a bare catch here used to swallow them without a trace. Retry
+        // behavior is unchanged: park until the next reconnect, re-watch.
+        logger?.error(
+          { err: error, bucket: bucketName },
+          "KV watch failed - will retry on reconnect",
+        );
         cleanup();
         if (!signal?.aborted) {
-          // Wait for reconnect event before retrying
-          await firstValueFrom(natsService.onReconnect());
+          // Same terminal semantics as the normal-exit path above.
+          const outcome = await waitForReconnectOrAbort(natsService, signal);
+          if (outcome === "completed") return;
         }
       }
     }

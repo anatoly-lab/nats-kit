@@ -188,7 +188,7 @@ describe("subscribeWithReconnect", () => {
     await expect(done).resolves.toBeUndefined();
   });
 
-  it("handles an already-completed onReconnect() during the reconnect wait (no TDZ)", async () => {
+  it("treats an already-completed onReconnect() as terminal: loop ends, no resubscribe, no TDZ crash", async () => {
     const reconnect$ = new Subject<void>();
     reconnect$.complete();
     const subscriptions: FakeSubscription[] = [];
@@ -212,13 +212,90 @@ describe("subscribeWithReconnect", () => {
     await tick();
     expect(connection.subscribe).toHaveBeenCalledTimes(1);
 
-    // Drop → helper subscribes to the already-completed subject; `complete`
-    // fires synchronously and the wait resolves WITHOUT throwing (TDZ guard).
+    // Drop → the wait observes the completed subject SYNCHRONOUSLY (the TDZ
+    // guard) and reports it as TERMINAL: the loop exits WITHOUT abort and
+    // never resubscribes. (The old behavior — treating complete like a
+    // reconnect tick — resubscribed here and hot-spun once the runner was
+    // stopped for real.)
     subscriptions[0]!.end();
-    await tick();
-    expect(connection.subscribe).toHaveBeenCalledTimes(2);
+    await expect(done).resolves.toBeUndefined();
+    expect(connection.subscribe).toHaveBeenCalledTimes(1);
+    expect(abort.signal.aborted).toBe(false);
+  });
 
+  it("exits without spinning when the runner stops while the loop is alive and the signal is NOT aborted", async () => {
+    const reconnect$ = new Subject<void>();
+    const subscriptions: FakeSubscription[] = [];
+    const connection = {
+      subscribe: vi.fn(() => {
+        const sub = new FakeSubscription();
+        subscriptions.push(sub);
+        return sub;
+      }),
+    };
+    const natsService = makeRunner(reconnect$, connection);
+
+    const abort = new AbortController();
+    const done = subscribeWithReconnect({
+      subject: "tunnel.kick",
+      natsService,
+      handler: vi.fn(),
+      signal: abort.signal,
+    });
+
+    await tick();
+    expect(connection.subscribe).toHaveBeenCalledTimes(1);
+
+    // runner.stop(): the reconnect subject completes, then the live
+    // subscription's iterator ends (connection closed).
+    reconnect$.complete();
+    subscriptions[0]!.end();
+
+    // The loop must EXIT cleanly — not resubscribe against a dead runner in a
+    // microtask-speed spin. Bounded: attempts do not grow after completion.
+    await expect(done).resolves.toBeUndefined();
+    await tick(10);
+    expect(connection.subscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not park in for-await when abort fires while awaiting waitForReady", async () => {
+    const reconnect$ = new Subject<void>();
+    const subscriptions: FakeSubscription[] = [];
+    const connection = {
+      subscribe: vi.fn(() => {
+        const sub = new FakeSubscription();
+        subscriptions.push(sub);
+        return sub;
+      }),
+    };
+    let resolveReady!: () => void;
+    const natsService = {
+      waitForReady: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveReady = resolve;
+          }),
+      ),
+      getConnection: vi.fn(() => connection),
+      onReconnect: vi.fn(() => reconnect$.asObservable()),
+    } as unknown as NatsConnectionRunner;
+
+    const abort = new AbortController();
+    const done = subscribeWithReconnect({
+      subject: "tunnel.kick",
+      natsService,
+      handler: vi.fn(),
+      signal: abort.signal,
+    });
+
+    await tick();
+    // Abort fires while waitForReady is pending — the abort listener runs
+    // while `subscription` is still null (a no-op) and never fires again.
     abort.abort();
+    resolveReady();
+
+    // The post-subscribe re-check must exit the loop instead of parking the
+    // for-await on a live subscription forever.
     await expect(done).resolves.toBeUndefined();
   });
 

@@ -282,8 +282,13 @@ export class JetStreamService {
    * Useful when a consumer needs to wait for a producer to create the stream.
    *
    * @param streamName - Name of the stream to wait for
-   * @param options - timeout in ms (default 30000), retryInterval in ms (default 1000)
-   * @returns Promise that resolves when stream exists, rejects on timeout
+   * @param options - timeout in ms (default 30000), retryInterval in ms
+   *   (default 1000), and an optional AbortSignal
+   * @returns Promise that resolves when stream exists, rejects on timeout.
+   *   Abort semantics: when `options.signal` aborts, the poll RESOLVES early
+   *   (it does not throw) — mirroring the loops' abortable sleeps — and the
+   *   stream may NOT exist. Callers passing a signal must re-check
+   *   `signal.aborted` before doing further work (runDurableConsumer does).
    * @throws NatsNotConnectedError if NATS is not connected
    *
    * @example
@@ -295,13 +300,27 @@ export class JetStreamService {
    */
   async waitForStream(
     streamName: string,
-    options?: { timeout?: number; retryInterval?: number },
+    options?: {
+      timeout?: number;
+      retryInterval?: number;
+      signal?: AbortSignal;
+    },
   ): Promise<void> {
     const timeout = options?.timeout ?? 30000;
     const retryInterval = options?.retryInterval ?? 1000;
+    const signal = options?.signal;
     const startTime = Date.now();
 
     while (true) {
+      // Checked at loop top AND honored by the abortable inter-poll sleep, so
+      // a shutdown never has to sit out a (default 30s) poll it will discard.
+      if (signal?.aborted) {
+        this.logger.debug?.(
+          `waitForStream(${streamName}) aborted - returning early`,
+        );
+        return;
+      }
+
       try {
         await this.getStreamInfo(streamName);
         this.logger.log(`Stream ${streamName} is ready`);
@@ -329,7 +348,7 @@ export class JetStreamService {
           `Stream ${streamName} not found, retrying in ${retryInterval}ms (elapsed: ${elapsed}ms)`,
         );
 
-        await new Promise((resolve) => setTimeout(resolve, retryInterval));
+        await abortableSleep(retryInterval, signal);
       }
     }
   }
@@ -377,4 +396,35 @@ export class JetStreamService {
       error.message.toLowerCase().includes("consumer not found")
     );
   }
+}
+
+/**
+ * Sleep that resolves early when the signal aborts (listener-cancelled timer,
+ * listener cleaned up on the timer path). Mirrors the module-private helper in
+ * `durable-consumer.ts` — kept local rather than promoted to a shared util
+ * because the signal is optional here and the helper is ~15 lines.
+ */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (!signal) {
+      setTimeout(resolve, ms);
+      return;
+    }
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+
+    const onAbort = () => {
+      clearTimeout(timeout);
+      resolve();
+    };
+
+    const timeout = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }

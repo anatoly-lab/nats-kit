@@ -78,3 +78,53 @@ describe("JetStreamService — getManager", () => {
     expect(jetstreamManagerMock).not.toHaveBeenCalled();
   });
 });
+
+describe("JetStreamService — waitForStream abort", () => {
+  it("resolves promptly (well under the poll interval) when the signal aborts mid-poll", async () => {
+    vi.useFakeTimers();
+    try {
+      const { runner } = makeRunner();
+      const svc = new JetStreamService(runner);
+      // "stream not found" drives the retry path via the message fallback of
+      // isStreamNotFound, so the poll parks in its inter-poll sleep.
+      const info = vi.fn().mockRejectedValue(new Error("stream not found"));
+      jetstreamManagerMock.mockResolvedValue({ streams: { info } });
+
+      const abort = new AbortController();
+      let resolved = false;
+      const p = svc
+        .waitForStream("S", { retryInterval: 1000, signal: abort.signal })
+        .then(() => {
+          resolved = true;
+        });
+
+      // First poll: not found → sleeping for the retry interval.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(info).toHaveBeenCalledTimes(1);
+      expect(resolved).toBe(false);
+
+      // Abort mid-sleep: must resolve WITHOUT advancing the 1000ms interval
+      // (the sleep is listener-cancelled) and without polling again.
+      abort.abort();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(resolved).toBe(true);
+      expect(info).toHaveBeenCalledTimes(1);
+      await p;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("returns immediately without polling when the signal is already aborted", async () => {
+    const { runner } = makeRunner();
+    const svc = new JetStreamService(runner);
+    const info = vi.fn();
+    jetstreamManagerMock.mockResolvedValue({ streams: { info } });
+
+    const abort = new AbortController();
+    abort.abort();
+
+    await svc.waitForStream("S", { signal: abort.signal });
+    expect(info).not.toHaveBeenCalled();
+  });
+});

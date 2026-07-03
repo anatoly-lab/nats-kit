@@ -178,4 +178,105 @@ describe("watchWithReconnect", () => {
     await tick();
     await consume;
   });
+
+  it("ends the generator cleanly (no EmptyError) when the reconnect subject completes while waiting", async () => {
+    const reconnect$ = new Subject<void>();
+    const watchers: FakeWatcher[] = [];
+    const kv = {
+      watch: vi.fn(async () => {
+        const w = new FakeWatcher();
+        watchers.push(w);
+        return w;
+      }),
+    } as unknown as KV;
+    const natsService = {
+      onReconnect: vi.fn(() => reconnect$.asObservable()),
+    } as unknown as NatsConnectionRunner;
+
+    const abort = new AbortController();
+    let consumerError: unknown;
+    const consume = (async () => {
+      try {
+        for await (const ev of watchWithReconnect(
+          kv,
+          natsService,
+          (e: KvEntry) => e.key,
+          abort.signal,
+        )) {
+          void ev;
+        }
+      } catch (error) {
+        consumerError = error;
+      }
+    })();
+
+    await tick();
+    // Drop: the watcher iterator ends → the generator parks on the reconnect
+    // wait.
+    watchers[0]!.end();
+    await tick();
+
+    // runner.stop() completes the subject. firstValueFrom (the old mechanism)
+    // rejected here with an opaque rxjs EmptyError that crashed the consumer's
+    // for-await; now the generator must simply END.
+    reconnect$.complete();
+    await consume;
+
+    expect(consumerError).toBeUndefined();
+    expect(kv.watch).toHaveBeenCalledTimes(1);
+  });
+
+  it("logs watch failures with the bucket name and still retries on reconnect", async () => {
+    const reconnect$ = new Subject<void>();
+    const watchers: FakeWatcher[] = [];
+    const watch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("permissions violation"))
+      .mockImplementation(async () => {
+        const w = new FakeWatcher();
+        watchers.push(w);
+        return w;
+      });
+    // The concrete v3 Bucket carries the name as a plain `bucket` property.
+    const kv = { watch, bucket: "tunnels" } as unknown as KV;
+    const natsService = {
+      onReconnect: vi.fn(() => reconnect$.asObservable()),
+    } as unknown as NatsConnectionRunner;
+    const logger = {
+      log: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    };
+
+    const abort = new AbortController();
+    const consume = (async () => {
+      for await (const ev of watchWithReconnect(
+        kv,
+        natsService,
+        (e: KvEntry) => e.key,
+        abort.signal,
+        logger,
+      )) {
+        void ev;
+      }
+    })();
+
+    await tick();
+    // The failure is surfaced (the old bare catch swallowed it silently)...
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ bucket: "tunnels", err: expect.any(Error) }),
+      expect.stringContaining("KV watch failed"),
+    );
+    expect(watch).toHaveBeenCalledTimes(1);
+
+    // ...and the retry behavior is preserved: reconnect → re-watch.
+    reconnect$.next();
+    await tick();
+    expect(watch).toHaveBeenCalledTimes(2);
+
+    abort.abort();
+    await tick();
+    await consume;
+  });
 });
