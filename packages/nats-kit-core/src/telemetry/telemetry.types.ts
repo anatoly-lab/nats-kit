@@ -1,5 +1,5 @@
 /**
- * Telemetry seam (design D7).
+ * Telemetry seam.
  *
  * Library-owned, all-optional, with NO OpenTelemetry import. The consumer
  * implements this with real OTel (spans/metrics) and injects it; the default is

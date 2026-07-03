@@ -5,7 +5,10 @@
 // useFactory / useClass / useExisting) plus the `MODULE_OPTIONS_TOKEN` for
 // injection. We rename the generated options token to a library-namespaced
 // `NATS_OPTIONS` so consumers see `NATS_OPTIONS` everywhere, not Nest's
-// generic `MODULE_OPTIONS_TOKEN`.
+// generic `MODULE_OPTIONS_TOKEN`. `moduleName: "Nats"` makes the underlying
+// provider token the deterministic string "NATS_MODULE_OPTIONS" instead of a
+// random UUID, so DI errors that print the token stay readable (consumers
+// still inject via the exported `NATS_OPTIONS` binding either way).
 //
 // `.setClassMethodName("forRoot")` flips the builder defaults from
 // `register` / `registerAsync` to `forRoot` / `forRootAsync` — the convention
@@ -26,7 +29,7 @@ import type { NatsModuleOptions } from "./nats.options.js";
 export const {
   ConfigurableModuleClass: NatsConfigurableModuleClass,
   MODULE_OPTIONS_TOKEN: NATS_OPTIONS,
-} = new ConfigurableModuleBuilder<NatsModuleOptions>()
+} = new ConfigurableModuleBuilder<NatsModuleOptions>({ moduleName: "Nats" })
   .setClassMethodName("forRoot")
   .setExtras({ isGlobal: true }, (definition, extras) => ({
     ...definition,

@@ -41,7 +41,7 @@ import { emitTelemetry } from "../telemetry/telemetry.util.js";
  * });
  *
  * // Get consumer
- * const consumer = await jsService.getConsumer('USERS', 'tunnel-user-123');
+ * const consumer = await jsService.getConsumer('USERS', 'session-user-123');
  * const messages = await consumer.consume();
  * ```
  */

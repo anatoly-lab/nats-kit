@@ -2,7 +2,7 @@ import { type NatsLogger } from "../logging/logger.types.js";
 import { type NatsTelemetry } from "./telemetry.types.js";
 
 /**
- * Invoke a consumer-provided telemetry hook defensively (design D7).
+ * Invoke a consumer-provided telemetry hook defensively.
  *
  * Telemetry sinks are injected by the consumer; a throwing sink must never
  * break the connection lifecycle or a consumer loop. This runs the hook inside

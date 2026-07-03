@@ -1,11 +1,11 @@
 // Public surface of @nats-kit/core — the framework-free NATS toolkit.
 //
-// Mirrors the in-repo `@repo/nats` barrel MINUS the NestJS module, NatsCheck,
-// domain stream/consumer presets, and NatsSubjects (all of which are framework-
-// or product-specific and live elsewhere). The Nest lifecycle owner `NatsService`
-// becomes the framework-free `NatsConnectionRunner`.
+// Extracted from an internal NestJS module, with everything framework- or
+// product-specific stripped out. The Nest lifecycle owner (`NatsService`)
+// becomes the framework-free `NatsConnectionRunner`; the NestJS adapter lives
+// in the sibling `@nats-kit/nestjs` package.
 
-// Connection runner (was NatsService)
+// Connection runner
 export { NatsConnectionRunner } from "./connection/nats-connection-runner.js";
 export { NatsConnectionStatus } from "./connection/connection-status.js";
 
@@ -20,10 +20,10 @@ export { NatsConfigSchema, defaultNatsConfig } from "./config/nats.config.js";
 // Errors
 export { NatsNotConnectedError } from "./errors/index.js";
 
-// Logging seam (design L1)
+// Logging seam
 export type { NatsLogger, DurableConsumerLogger } from "./logging/logger.types.js";
 
-// Telemetry seam (design D7)
+// Telemetry seam
 export type { NatsTelemetry } from "./telemetry/telemetry.types.js";
 export { noopTelemetry } from "./telemetry/telemetry.types.js";
 

@@ -28,8 +28,8 @@ import { type NatsLogger } from "../logging/logger.types.js";
  *
  * Usage:
  * ```typescript
- * const kv = await kvService.getBucket('tunnels');
- * await kv.put('user-123', JSON.stringify({ tunnelId: 'abc' }));
+ * const kv = await kvService.getBucket('sessions');
+ * await kv.put('user-123', JSON.stringify({ sessionId: 'abc' }));
  * const entry = await kv.get('user-123');
  * ```
  */
@@ -268,7 +268,7 @@ export class KvService {
    * List all keys in a KV bucket
    *
    * Drains the underlying `bucket.keys(filter)` async iterator into an array.
-   * Use for read-side enumeration (e.g. admin listing of active tunnels).
+   * Use for read-side enumeration (e.g. admin listing of active sessions).
    * Note: this materializes every matching key in memory, so it is intended
    * for buckets with a bounded key count (live connection state), not for
    * unbounded high-cardinality buckets.

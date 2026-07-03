@@ -247,7 +247,7 @@ describe("watchWithReconnect", () => {
     // The concrete v3 Bucket carries the name as a plain `bucket` property.
     const kv = {
       watch,
-      bucket: "tunnels",
+      bucket: "sessions",
       status: vi.fn(async () => ({ values: 2 })),
     } as unknown as KV;
     const natsService = {
@@ -276,7 +276,7 @@ describe("watchWithReconnect", () => {
     await tick();
     // The failure is surfaced (the old bare catch swallowed it silently)...
     expect(logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ bucket: "tunnels", err: expect.any(Error) }),
+      expect.objectContaining({ bucket: "sessions", err: expect.any(Error) }),
       expect.stringContaining("KV watch failed"),
     );
     expect(watch).toHaveBeenCalledTimes(1);

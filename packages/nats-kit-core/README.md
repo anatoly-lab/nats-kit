@@ -29,7 +29,7 @@ npm install @nats-kit/core rxjs
 The `@nats-io/*` packages are regular dependencies — do **not** install them
 yourself; everything you need from them (types, `headers()`, error classes) is
 re-exported from `@nats-kit/core`, and a single installed copy is what makes
-`instanceof` checks on nats.js errors reliable. Requires Node `>=22.22.0`.
+`instanceof` checks on nats.js errors reliable. Requires Node `>=22.0.0`.
 
 ## Quickstart
 

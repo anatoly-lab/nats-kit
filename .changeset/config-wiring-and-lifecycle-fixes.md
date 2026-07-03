@@ -41,3 +41,12 @@ Correctness pass over config wiring, the NestJS module, and the connection lifec
 
 - `forRoot({ isGlobal: false })` now actually scopes the module (a stray `@Global()` decorator made the opt-out a silent no-op).
 - `NATS_OPTIONS` is exported from the module, so `@Inject(NATS_OPTIONS)` works in consumer modules as documented.
+
+**Packaging (both packages)**
+
+- Node `engines` floor relaxed from `>=22.22.0` to `>=22.0.0`.
+- `@nats-kit/nestjs` now supports NestJS 10 and 11 (`@nestjs/common` / `@nestjs/core` peer range widened to `^10.0.0 || ^11.0.0`; tested against 11).
+- `@nats-kit/nestjs` depends on `@nats-kit/core` via a caret range instead of an exact pin, so npm can dedupe a single core copy (keeps `instanceof` / enum identity intact).
+- `"sideEffects": false` for tree-shaking in bundled consumers.
+- `./package.json` added to the `exports` map (tooling can `require.resolve('@nats-kit/*/package.json')`).
+- `CHANGELOG.md` ships in the npm tarball; added `keywords` / `homepage` / `bugs` npm metadata.

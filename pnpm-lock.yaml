@@ -14,6 +14,9 @@ importers:
       '@eslint/js':
         specifier: 10.0.1
         version: 10.0.1(eslint@10.6.0)
+      '@swc/core':
+        specifier: 1.15.43
+        version: 1.15.43
       '@types/node':
         specifier: 26.0.1
         version: 26.0.1
@@ -50,6 +53,9 @@ importers:
       typescript-eslint:
         specifier: 8.62.1
         version: 8.62.1(eslint@10.6.0)(typescript@6.0.3)
+      unplugin-swc:
+        specifier: 1.5.9
+        version: 1.5.9(@swc/core@1.15.43)
       vitest:
         specifier: 4.1.9
         version: 4.1.9(@types/node@26.0.1)(vite@8.1.0(@types/node@26.0.1)(yaml@2.9.0))
@@ -91,7 +97,7 @@ importers:
   packages/nats-kit-nestjs:
     dependencies:
       '@nats-kit/core':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../nats-kit-core
     devDependencies:
       '@nestjs/common':
@@ -103,9 +109,6 @@ importers:
       '@nestjs/testing':
         specifier: 11.1.27
         version: 11.1.27(@nestjs/common@11.1.27(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.27(@nestjs/common@11.1.27(reflect-metadata@0.2.2)(rxjs@7.8.2))(reflect-metadata@0.2.2)(rxjs@7.8.2))
-      '@swc/core':
-        specifier: 1.15.43
-        version: 1.15.43
       '@types/node':
         specifier: 26.0.1
         version: 26.0.1
@@ -121,9 +124,6 @@ importers:
       typescript:
         specifier: 6.0.3
         version: 6.0.3
-      unplugin-swc:
-        specifier: 1.5.9
-        version: 1.5.9(@swc/core@1.15.43)
       vitest:
         specifier: 4.1.9
         version: 4.1.9(@types/node@26.0.1)(vite@8.1.0(@types/node@26.0.1)(yaml@2.9.0))

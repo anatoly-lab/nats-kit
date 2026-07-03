@@ -19,7 +19,7 @@ page and documents its API.
 ## Toolchain
 
 - **Package manager:** pnpm (the `packageManager` field is authoritative)
-- **Node:** `>=22.22.0` (`.nvmrc`)
+- **Node:** `>=22.0.0` (published `engines` floor; dev toolchain pinned to `22.22.0` via `.nvmrc`)
 - **Monorepo runner:** Turborepo
 - **Build:** tshy (dual `dist/esm` + `dist/commonjs`)
 - **Language:** TypeScript (`NodeNext`, strict)

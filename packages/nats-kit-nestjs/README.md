@@ -21,14 +21,16 @@ instances come from `NatsService.getRunner()`, not `new`.
 npm install @nats-kit/nestjs
 ```
 
-Peer dependencies (a Nest 11 app has these already):
+Peer dependencies (a Nest app has these already):
 
-- `@nestjs/common` `^11.0.0`
-- `@nestjs/core` `^11.0.0`
+- `@nestjs/common` `^10.0.0 || ^11.0.0`
+- `@nestjs/core` `^10.0.0 || ^11.0.0`
 - `reflect-metadata` `>=0.2.0`
 - `rxjs` `^7.8.0`
 
-Requires Node `>=22.22.0`.
+Tested against Nest 11.
+
+Requires Node `>=22.0.0`.
 
 ## Quickstart
 
@@ -137,7 +139,9 @@ honored (there is no stray `@Global()` decorator overriding it); with
 The kit deliberately never gives up or crashes the process — reconnection is
 infinite by contract. Give-up/alerting policy is *yours*, and the natural
 place for it is a health indicator. With
-[Terminus](https://docs.nestjs.com/recipes/terminus):
+[Terminus](https://docs.nestjs.com/recipes/terminus) — the example uses
+`HealthIndicatorService`, exported from `@nestjs/terminus@11+` (on Nest 10 /
+terminus 10, extend the legacy `HealthIndicator` base class instead):
 
 ```typescript
 import { Injectable } from "@nestjs/common";

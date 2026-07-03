@@ -44,7 +44,7 @@ export interface RunDurableConsumerOptions {
   logger?: NatsLogger;
 
   /**
-   * Optional telemetry sink (D7). Defaults to {@link noopTelemetry}. The loop
+   * Optional telemetry sink. Defaults to {@link noopTelemetry}. The loop
    * emits `onConsume(subject, "nak")` when the handler throws (the only
    * disposition it observes — see the seam note in the loop body).
    */

@@ -74,7 +74,7 @@ async function tick(times = 3): Promise<void> {
 
 function makeMsg(payload: string): Msg {
   return {
-    subject: "tunnel.kick",
+    subject: "session.kick",
     data: new TextEncoder().encode(payload),
   } as unknown as Msg;
 }
@@ -108,7 +108,7 @@ describe("subscribeWithReconnect", () => {
 
     const abort = new AbortController();
     const done = subscribeWithReconnect({
-      subject: "tunnel.kick",
+      subject: "session.kick",
       natsService,
       handler,
       signal: abort.signal,
@@ -167,7 +167,7 @@ describe("subscribeWithReconnect", () => {
 
     const abort = new AbortController();
     const done = subscribeWithReconnect({
-      subject: "tunnel.kick",
+      subject: "session.kick",
       natsService,
       handler,
       signal: abort.signal,
@@ -203,7 +203,7 @@ describe("subscribeWithReconnect", () => {
 
     const abort = new AbortController();
     const done = subscribeWithReconnect({
-      subject: "tunnel.kick",
+      subject: "session.kick",
       natsService,
       handler: vi.fn(),
       signal: abort.signal,
@@ -237,7 +237,7 @@ describe("subscribeWithReconnect", () => {
 
     const abort = new AbortController();
     const done = subscribeWithReconnect({
-      subject: "tunnel.kick",
+      subject: "session.kick",
       natsService,
       handler: vi.fn(),
       signal: abort.signal,
@@ -282,7 +282,7 @@ describe("subscribeWithReconnect", () => {
 
     const abort = new AbortController();
     const done = subscribeWithReconnect({
-      subject: "tunnel.kick",
+      subject: "session.kick",
       natsService,
       handler: vi.fn(),
       signal: abort.signal,
@@ -313,7 +313,7 @@ describe("subscribeWithReconnect", () => {
 
     const abort = new AbortController();
     const done = subscribeWithReconnect({
-      subject: "tunnel.kick",
+      subject: "session.kick",
       natsService,
       handler: vi.fn(),
       signal: abort.signal,

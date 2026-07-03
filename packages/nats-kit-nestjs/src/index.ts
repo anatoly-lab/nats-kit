@@ -1,6 +1,6 @@
 // Public surface of `@nats-kit/nestjs`.
 //
-// SINGLE IMPORT SURFACE (design §4.2): consumers import EVERYTHING from
+// SINGLE IMPORT SURFACE: consumers import EVERYTHING from
 // `@nats-kit/nestjs` and never need to reach into `@nats-kit/core` directly.
 // The adapter's own module + injectable services come first; everything below
 // is a 1:1 re-export of the core's public types/values (sourced from
@@ -42,7 +42,7 @@ export { NatsConnectionStatus } from "@nats-kit/core";
 // Errors
 export { NatsNotConnectedError } from "@nats-kit/core";
 
-// Logging + telemetry seams (design L1 / D7)
+// Logging + telemetry seams
 export type {
   NatsLogger,
   DurableConsumerLogger,

@@ -23,6 +23,10 @@
 //        how the package's tsconfig resolves at test time.
 //   Test-transform ONLY — production builds still go through tshy/tsc, this
 //   plugin never touches `pnpm build`.
+//
+//   `unplugin-swc` + `@swc/core` are declared in the ROOT package.json because
+//   this root-level file is what imports them; declaring them only in a
+//   package would leave this import unresolvable when the config is bundled.
 
 import swc from "unplugin-swc";
 import { mergeConfig, defineConfig } from "vitest/config";

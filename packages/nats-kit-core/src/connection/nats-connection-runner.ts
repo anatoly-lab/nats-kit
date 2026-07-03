@@ -333,7 +333,7 @@ export class NatsConnectionRunner {
       // If this is a RE-established connection after we were down (i.e. a
       // background-retry connect, attempt > 1), the library's `reconnect`
       // status event also won't fire — yet `onReconnect()`-based fallbacks
-      // (mcp-quota resync, kv.watcher cache-invalidation) only resume off
+      // (e.g. state resync, kv.watcher cache-invalidation) only resume off
       // that signal and would otherwise stay stranded until some unrelated
       // future reconnect. Drive reconnectSubject too so they un-strand. Those
       // consumers are idempotent (resync / cache-invalidation), so the extra

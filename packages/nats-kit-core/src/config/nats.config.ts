@@ -87,7 +87,7 @@ export const NatsConfigSchema = z.object({
 
   /**
    * Maximum payload size in bytes for NATS messages.
-   * Recommended: 4MB (for large MCP payloads with images/documents)
+   * Recommended: 4MB when transporting large payloads (e.g. embedded images/documents)
    * Note: This is a documentation field only. The actual max_payload is
    * configured server-side in NATS, and the client automatically respects it.
    * This field exists to document the expected server configuration.

@@ -9,8 +9,8 @@
 //                        (resilient; retries in the background on failure).
 //   - OnModuleDestroy:   `runner.stop()` — graceful drain + close.
 //
-// The full public API of the runner is delegated 1:1 so consumer injection
-// sites are UNCHANGED versus the former in-repo `@repo/nats` `NatsService`
+// The full public API of the runner is delegated 1:1 so injection sites need
+// nothing but this class
 // (waitForReady / getConnection / getJetStream / isConnected / getStatus /
 // guarded / required / withRetry / the observable seams). `getRunner()` is the
 // one addition — it exposes the underlying runner so the `KvService` /

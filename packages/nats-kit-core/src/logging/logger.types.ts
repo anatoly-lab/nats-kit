@@ -1,5 +1,5 @@
 /**
- * Logger seam for the NATS core (design L1).
+ * Logger seam for the NATS core.
  *
  * A minimal, duck-typed logger contract satisfied by both a NestJS `Logger`
  * and pino-style loggers (`logger.error({ err }, "message")`). Hoisted here so

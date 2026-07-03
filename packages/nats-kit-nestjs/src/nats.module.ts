@@ -15,8 +15,8 @@
 // silent no-op. Same recipe as `@nestjs/config`. With the default, once
 // configured at the root every feature module gets `NatsService` / `KvService`
 // / `JetStreamService` without re-importing `NatsModule`. This mirrors the
-// former in-repo `@repo/nats` module, so the re-consume is a near-pure import
-// swap.
+// internal NestJS module this package was extracted from, so migrating off a
+// hand-rolled equivalent is a near-pure import swap.
 //
 // `NATS_OPTIONS` is exported alongside the services because it is public API
 // (re-exported from the barrel) and consumers may `@Inject(NATS_OPTIONS)` the

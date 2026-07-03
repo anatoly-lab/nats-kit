@@ -45,8 +45,8 @@ describe("KvService — bucket cache", () => {
     const svc = new KvService(makeRunner(reconnect$));
     svc.start();
 
-    const a1 = await svc.getBucket("tunnels");
-    const a2 = await svc.getBucket("tunnels");
+    const a1 = await svc.getBucket("sessions");
+    const a2 = await svc.getBucket("sessions");
 
     expect(a1).toBe(a2);
     expect(createMock).toHaveBeenCalledTimes(1);
@@ -59,13 +59,13 @@ describe("KvService — bucket cache", () => {
     const svc = new KvService(makeRunner(reconnect$));
     svc.start();
 
-    await svc.getBucket("tunnels");
+    await svc.getBucket("sessions");
     expect(createMock).toHaveBeenCalledTimes(1);
 
     // NATS reconnected — the start() subscription clears the cache.
     reconnect$.next();
 
-    await svc.getBucket("tunnels");
+    await svc.getBucket("sessions");
     expect(createMock).toHaveBeenCalledTimes(2);
 
     svc.stop();
@@ -76,12 +76,12 @@ describe("KvService — bucket cache", () => {
     const svc = new KvService(makeRunner(reconnect$));
     svc.start();
 
-    await svc.getBucket("tunnels");
+    await svc.getBucket("sessions");
     await svc.getBucket("quota");
     expect(createMock).toHaveBeenCalledTimes(2);
 
-    svc.clearCache("tunnels");
-    await svc.getBucket("tunnels"); // re-fetch
+    svc.clearCache("sessions");
+    await svc.getBucket("sessions"); // re-fetch
     await svc.getBucket("quota"); // still cached
     expect(createMock).toHaveBeenCalledTimes(3);
 

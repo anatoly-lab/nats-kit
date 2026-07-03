@@ -12,15 +12,15 @@ import { TIME_MS, TIME_NS } from "./time.constants.js";
 
 /**
  * Default TTL for NATS KV buckets (2 minutes).
- * Default TTL for tunnel state in KV.
+ * Opt-in convenience default, suited to short-lived presence/session state.
  *
  * Units: milliseconds (see file header).
  */
 export const DEFAULT_KV_TTL_MS = 120 * TIME_MS.SECOND;
 
 /**
- * Default stream retention (7 days in nanoseconds)
- * Used for user/session event streams
+ * Default stream retention (7 days in nanoseconds).
+ * Opt-in convenience default for event streams.
  */
 export const DEFAULT_STREAM_RETENTION = 7 * TIME_NS.DAY;
 
