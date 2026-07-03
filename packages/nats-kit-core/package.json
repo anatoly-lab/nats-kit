@@ -1,6 +1,6 @@
 {
   "name": "@nats-kit/core",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Framework-free NATS toolkit for Node: resilient connection runner, JetStream and KV services, and reconnect-aware helpers.",
   "keywords": [
     "nats",
